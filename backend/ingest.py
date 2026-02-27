@@ -18,7 +18,7 @@ client = OpenAI(
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
 # Replace this with whatever you named your index in the Pinecone dashboard
-index_name = "campuscopilot" 
+index_name = "campus-copilot" 
 index = pc.Index(index_name)
 
 # --- YOUR RAG FUNCTIONS ---
