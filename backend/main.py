@@ -3,9 +3,10 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List, Dict, Optional # <-- ADDED IMPORT FOR HISTORY
 from dotenv import load_dotenv, find_dotenv
 from openai import OpenAI
-from pinecone import Pinecone # <-- NEW RAG IMPORT
+from pinecone import Pinecone 
 
 # Load the .env file
 env_path = find_dotenv()
@@ -36,13 +37,14 @@ client = OpenAI(
     api_key=github_token,
 )
 
-# 🔥 NEW: Connect to your Pinecone Vector Database 🔥
+# 🔥 Connect to your Pinecone Vector Database 🔥
 pc = Pinecone(api_key=pinecone_key)
 index = pc.Index("campus-copilot")
 
 class ChatRequest(BaseModel):
     message: str
     user_id: str
+    history: Optional[List[Dict[str, str]]] = [] # <-- ADDED HISTORY
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
@@ -65,12 +67,11 @@ async def chat_endpoint(req: ChatRequest):
 
         # --- RAG STEP 3: Stitch the retrieved text together ---
         retrieved_context = ""
-        for match in search_results['matches']:
-            if 'text' in match['metadata']:
+        for match in search_results.get('matches', []):
+            if 'metadata' in match and 'text' in match['metadata']:
                 retrieved_context += match['metadata']['text'] + "\n\n"
 
         # --- RAG STEP 4: Build the dynamic System Prompt ---
-        # We inject the retrieved_context right into the instructions!
         dynamic_system_prompt = f"""
         You are Campus Copilot, an AI assistant for university students at Manipal Institute of Technology.
         You are helpful, concise, and professional. 
@@ -84,20 +85,31 @@ async def chat_endpoint(req: ChatRequest):
         {retrieved_context}
         """
 
+        # --- ADD HISTORY LOGIC HERE ---
+        api_messages = [{"role": "system", "content": dynamic_system_prompt}]
+        
+        # Inject previous conversation turns
+        for past_msg in req.history:
+            if past_msg.get("role") in ["user", "assistant"]:
+                api_messages.append({
+                    "role": past_msg["role"], 
+                    "content": past_msg["content"]
+                })
+                
+        # Append the current question at the end
+        api_messages.append({"role": "user", "content": req.message})
+
         # --- RAG STEP 5: Ask GPT-4o ---
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[
-                {"role": "system", "content": dynamic_system_prompt},
-                {"role": "user", "content": req.message}
-            ],
+            messages=api_messages, # <-- REPLACED HARDCODED MESSAGES WITH THE NEW ARRAY
             temperature=0.7,
             max_tokens=400
         )
         
         ai_reply = response.choices[0].message.content
         
-        # Simulate action card for demo (Kept exactly as you wrote it!)
+        # Simulate action card for demo
         action_data = None
         if "lab" in req.message.lower() or "robotics" in req.message.lower():
             action_data = {

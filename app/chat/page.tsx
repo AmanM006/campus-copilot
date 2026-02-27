@@ -4,6 +4,7 @@ import {
   Send, Bot, User, Plus, MessageSquare, Settings, 
   Terminal, Search, LayoutGrid, Calendar, Trash2
 } from "lucide-react";
+import ReactMarkdown from "react-markdown"; // <-- 1. ADD THIS IMPORT
 import Link from "next/link";
 import { supabase } from "@/lib/supabase"; // <-- This connects your DB!
 
@@ -103,12 +104,20 @@ export default function ChatPage() {
       await supabase.from('messages').insert([
         { user_id: activeUser, content: userContent, role: 'user', thread_id: currentThreadId }
       ]);
+      const recentHistory = messages.slice(-4).map(m => ({ 
+        role: m.role, 
+        content: m.content 
+      }));
 
       // Call Python Backend
-      const response = await fetch("http://localhost:8000/api/chat", {
+    const response = await fetch("http://localhost:8000/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userContent, user_id: activeUser })
+        body: JSON.stringify({ 
+          message: userContent,
+          user_id: activeUser,
+          history: recentHistory // <-- WE ARE NOW SENDING MEMORY!
+        })
       });
       const data = await response.json();
 
@@ -272,15 +281,16 @@ export default function ChatPage() {
           <>
             <div className="chat-scroll">
               <div className="chat-container">
-                {messages.map((msg, idx) => (
-                  <div key={idx} className={`message-row ${msg.role}`}>
-                    <div className={`avatar ${msg.role}`}>
-                      {msg.role === "assistant" ? <Bot size={18} /> : <User size={18} />}
-                    </div>
-                    <div className={`bubble ${msg.role}`}>
-                      {msg.content}
-                    </div>
-                  </div>
+              {messages.map((msg, idx) => (
+    <div key={idx} className={`message-row ${msg.role}`}>
+      <div className={`avatar ${msg.role}`}>
+        {msg.role === "assistant" ? <Bot size={18} /> : <User size={18} />}
+      </div>
+      <div className={`bubble ${msg.role}`}>
+        <ReactMarkdown>
+          {msg.content}
+        </ReactMarkdown>
+      </div>                  </div>
                 ))}
                 {isTyping && (
                   <div className="message-row assistant">
