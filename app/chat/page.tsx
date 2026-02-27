@@ -1,8 +1,9 @@
 "use client";
 import React, { useState, useEffect, useRef } from "react";
-import { 
-  Send, Bot, User, Plus, MessageSquare, Settings, 
-  Terminal, Search, LayoutGrid, Calendar, Trash2
+import {
+    Send, Bot, User, Plus, MessageSquare, Settings,
+    Terminal, Search, LayoutGrid, Calendar, Trash2,
+    PanelLeftClose, PanelLeftOpen // <-- ADD THESE TWO
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -11,144 +12,159 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabase"; // <-- This connects your DB!
 
 interface Message {
-  id?: string;
-  role: "user" | "assistant";
-  content: string;
-  thread_id: string;
+    id?: string;
+    role: "user" | "assistant";
+    content: string;
+    thread_id: string;
 }
 
 interface Thread {
-  thread_id: string;
-  title: string;
+    thread_id: string;
+    title: string;
 }
 
 export default function ChatPage() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  
-  const activeUser = "aman_m_006"; // Hackathon hardcode
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [threads, setThreads] = useState<Thread[]>([]);
+    const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+    const [input, setInput] = useState("");
+    const [isTyping, setIsTyping] = useState(false);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    // Add these inside your ChatPage component, right under your other states
+    const [currentView, setCurrentView] = useState<"chat" | "settings">("chat");
+    const [activeUser, setActiveUser] = useState("aman_m_006");
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true); // <-- ADD THIS
+    // --- 1. FETCH THREADS FROM SUPABASE ---
+    const fetchThreads = async () => {
+        const { data, error } = await supabase
+            .from('messages')
+            .select('thread_id, content, created_at')
+            .eq('user_id', activeUser)
+            .order('created_at', { ascending: true });
 
-  // --- 1. FETCH THREADS FROM SUPABASE ---
-  const fetchThreads = async () => {
-    const { data, error } = await supabase
-      .from('messages')
-      .select('thread_id, content, created_at')
-      .eq('user_id', activeUser)
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      console.error("Error fetching threads:", error);
-      return;
-    }
-
-    if (data) {
-      const threadMap: Record<string, string> = {};
-      data.forEach(msg => {
-        // Use the very first message in the thread as the title
-        if (!threadMap[msg.thread_id]) {
-          threadMap[msg.thread_id] = msg.content.slice(0, 25) + "...";
+        if (error) {
+            console.error("Error fetching threads:", error);
+            return;
         }
-      });
-      
-      const uniqueThreads = Object.entries(threadMap).map(([id, title]) => ({
-        thread_id: id,
-        title: title
-      })).reverse(); // Put newest at the top
-      
-      setThreads(uniqueThreads);
-    }
-  };
 
-  // Load threads on initial page load
-  useEffect(() => { fetchThreads(); }, []);
+        if (data) {
+            const threadMap: Record<string, string> = {};
+            data.forEach(msg => {
+                // Use the very first message in the thread as the title
+                if (!threadMap[msg.thread_id]) {
+                    threadMap[msg.thread_id] = msg.content.slice(0, 25) + "...";
+                }
+            });
 
-  // --- 2. FETCH MESSAGES WHEN YOU CLICK A THREAD ---
-  useEffect(() => {
-    const loadThreadMessages = async () => {
-      if (!activeThreadId) return;
-      const { data } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('thread_id', activeThreadId)
-        .order('created_at', { ascending: true });
-      
-      if (data) setMessages(data);
+            const uniqueThreads = Object.entries(threadMap).map(([id, title]) => ({
+                thread_id: id,
+                title: title
+            })).reverse(); // Put newest at the top
+
+            setThreads(uniqueThreads);
+        }
     };
-    loadThreadMessages();
-  }, [activeThreadId]);
 
-  // Auto-scroll to bottom
-  useEffect(() => { 
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); 
-  }, [messages, isTyping]);
+    // Load threads on initial page load
+    useEffect(() => { fetchThreads(); }, []);
 
-  // --- 3. HANDLE SENDING MESSAGES ---
-  const handleSend = async (textToSend: string = input) => {
-    if (!textToSend.trim()) return;
+    // --- 2. FETCH MESSAGES WHEN YOU CLICK A THREAD ---
+    useEffect(() => {
+        const loadThreadMessages = async () => {
+            if (!activeThreadId) return;
+            const { data } = await supabase
+                .from('messages')
+                .select('*')
+                .eq('thread_id', activeThreadId)
+                .order('created_at', { ascending: true });
 
-    const userContent = textToSend.trim();
-    // If we are in an empty chat, generate a new thread ID, otherwise use existing
-    const currentThreadId = activeThreadId || crypto.randomUUID();
-    
-    if (!activeThreadId) setActiveThreadId(currentThreadId);
+            if (data) setMessages(data);
+        };
+        loadThreadMessages();
+    }, [activeThreadId]);
 
-    // Update UI instantly (Optimistic update)
-    setMessages(prev => [...prev, { role: "user", content: userContent, thread_id: currentThreadId }]);
-    setInput("");
-    setIsTyping(true);
+    // Auto-scroll to bottom
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [messages, isTyping]);
 
-    try {
-      // Save User Message to DB
-      await supabase.from('messages').insert([
-        { user_id: activeUser, content: userContent, role: 'user', thread_id: currentThreadId }
-      ]);
-      const recentHistory = messages.slice(-4).map(m => ({ 
-        role: m.role, 
-        content: m.content 
-      }));
+    // --- 3. HANDLE SENDING MESSAGES ---
+    const handleSend = async (textToSend: string = input) => {
+        if (!textToSend.trim()) return;
 
-      // Call Python Backend
-    const response = await fetch("http://localhost:8000/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          message: userContent,
-          user_id: activeUser,
-          history: recentHistory // <-- WE ARE NOW SENDING MEMORY!
-        })
-      });
-      const data = await response.json();
+        const userContent = textToSend.trim();
+        // If we are in an empty chat, generate a new thread ID, otherwise use existing
+        const currentThreadId = activeThreadId || crypto.randomUUID();
 
-      // Save AI Message to DB
-      await supabase.from('messages').insert([
-        { user_id: activeUser, content: data.reply, role: 'assistant', thread_id: currentThreadId }
-      ]);
+        if (!activeThreadId) setActiveThreadId(currentThreadId);
 
-      setMessages(prev => [...prev, { role: "assistant", content: data.reply, thread_id: currentThreadId }]);
-      fetchThreads(); // Refresh the sidebar to show the new chat title!
+        // Update UI instantly (Optimistic update)
+        setMessages(prev => [...prev, { role: "user", content: userContent, thread_id: currentThreadId }]);
+        setInput("");
+        setIsTyping(true);
 
-    } catch (error) {
-      console.error("Backend connection failed", error);
-    } finally {
-      setIsTyping(false);
-    }
-  };
+        try {
+            // Save User Message to DB
+            await supabase.from('messages').insert([
+                { user_id: activeUser, content: userContent, role: 'user', thread_id: currentThreadId }
+            ]);
+            const recentHistory = messages.slice(-4).map(m => ({
+                role: m.role,
+                content: m.content
+            }));
 
-  // Helper to start a completely blank chat
-  const startNewChat = () => {
-    setActiveThreadId(null);
-    setMessages([]);
-  };
+            // Call Python Backend
+            const response = await fetch("http://localhost:8000/api/chat", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    message: userContent,
+                    user_id: activeUser,
+                    history: recentHistory // <-- WE ARE NOW SENDING MEMORY!
+                })
+            });
+            const data = await response.json();
 
-  const isChatEmpty = messages.length === 0;
+            // Save AI Message to DB
+            await supabase.from('messages').insert([
+                { user_id: activeUser, content: data.reply, role: 'assistant', thread_id: currentThreadId }
+            ]);
 
-  return (
-    <div style={{ fontFamily: "'DM Sans', sans-serif", background: "#050505", color: "#fff", height: "100vh", display: "flex", overflow: "hidden" }}>
-      <style>{`
+            setMessages(prev => [...prev, { role: "assistant", content: data.reply, thread_id: currentThreadId }]);
+            fetchThreads(); // Refresh the sidebar to show the new chat title!
+
+        } catch (error) {
+            console.error("Backend connection failed", error);
+        } finally {
+            setIsTyping(false);
+        }
+    };
+    const handleClearHistory = async () => {
+        const confirmDelete = window.confirm("Are you sure? This will permanently delete all your chats from Supabase.");
+        if (!confirmDelete) return;
+
+        try {
+            await supabase.from('messages').delete().eq('user_id', activeUser);
+            setThreads([]);
+            setMessages([]);
+            setActiveThreadId(null);
+            alert("Chat history completely cleared.");
+        } catch (error) {
+            console.error("Failed to delete history:", error);
+        }
+    };
+
+    // Helper to start a completely blank chat
+    const startNewChat = () => {
+        setActiveThreadId(null);
+        setMessages([]);
+    };
+
+    const isChatEmpty = messages.length === 0;
+
+    return (
+        <div style={{ fontFamily: "'DM Sans', sans-serif", background: "#050505", color: "#fff", height: "100vh", display: "flex", overflow: "hidden" }}>
+            <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,300;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         ::selection { background: #7c3aed; color: #fff; }
@@ -179,10 +195,23 @@ export default function ChatPage() {
         .avatar.assistant { background: linear-gradient(135deg, #7c3aed, #3b82f6); color: #fff; }
         .avatar.user { background: rgba(255,255,255,0.1); color: #fff; }
 
-        .bubble { font-size: 15px; line-height: 1.6; max-width: 85%; white-space: pre-wrap; }
-        .bubble.user { background: rgba(255,255,255,0.08); padding: 12px 16px; border-radius: 16px; border-top-right-radius: 4px; }
-        .bubble.assistant { color: rgba(255,255,255,0.9); padding-top: 4px; }
-
+/* Fix for scrunched Markdown text */
+        .bubble p { margin-bottom: 16px; }
+        .bubble h1, .bubble h2, .bubble h3 { margin-top: 24px; margin-bottom: 12px; font-weight: 600; line-height: 1.3; }
+        .bubble ul, .bubble ol { margin-left: 24px; margin-bottom: 16px; padding-left: 8px; }
+        .bubble li { margin-bottom: 6px; }
+        .bubble.user { 
+            background: rgba(255,255,255,0.08); 
+            padding: 12px 16px; 
+            border-radius: 16px; 
+            border-top-right-radius: 4px;
+            display: block; /* Ensures the background wraps the content correctly */
+            width: fit-content; /* Keeps the bubble from stretching to 100% width if the text is short */
+            align-self: flex-end; /* Keeps the user bubble pinned to the right side of the row */
+        }
+        /* Ensure the very first and very last items don't add extra empty space */
+        .bubble > *:first-child { margin-top: 0; }
+        .bubble > *:last-child { margin-bottom: 0; }        
         .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; max-width: 760px; margin: 0 auto; padding: 20px; }
         .greeting { font-size: 32px; font-weight: 500; margin-bottom: 8px; text-align: center; }
         .sub-greeting { color: rgba(255,255,255,0.5); margin-bottom: 40px; text-align: center; }
@@ -199,7 +228,44 @@ export default function ChatPage() {
         .input-box:focus-within { border-color: rgba(124,58,237,0.5); background: rgba(255,255,255,0.06); box-shadow: 0 0 0 4px rgba(124,58,237,0.1); }
         .chat-input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 15px; }
         .chat-input::placeholder { color: rgba(255,255,255,0.4); }
+        /* UPDATE THESE SIDEBAR STYLES */
+        .sidebar { background: #0a0a0a; border-right: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; z-index: 10; transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1); overflow: hidden; white-space: nowrap; }
+        .sidebar.open { width: 260px; }
+        .sidebar.closed { width: 0; border-right: none; }
         
+        .sidebar-content { width: 260px; display: flex; flex-direction: column; height: 100%; }
+        
+        .brand-header { padding: 20px 24px; display: flex; align-items: center; justify-content: space-between; }
+        .toggle-btn { background: transparent; border: none; color: rgba(255,255,255,0.5); cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 6px; border-radius: 8px; transition: all 0.2s; }
+        .toggle-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+        /* ADD THESE FOOTER STYLES */
+        .sidebar-footer { padding: 16px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; gap: 12px; cursor: pointer; transition: background 0.2s; margin: 8px; border-radius: 8px; }
+        .sidebar-footer:hover { background: rgba(255,255,255,0.08); }
+        .user-info { display: flex; flex-direction: column; overflow: hidden; }
+        .user-name { font-size: 14px; font-weight: 500; color: #fff; text-overflow: ellipsis; overflow: hidden; }
+        .user-sub { font-size: 12px; color: rgba(255,255,255,0.5); }
+        .user-avatar { width: 32px; height: 32px; border-radius: 50%; background: #10b981; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: #fff; flex-shrink: 0; }
+/* SETTINGS PAGE STYLES */
+        .settings-page { flex: 1; display: flex; flex-direction: column; background: #050505; overflow-y: auto; }
+        .settings-nav { height: 64px; display: flex; align-items: center; padding: 0 32px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .back-btn { background: transparent; border: none; color: rgba(255,255,255,0.6); display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; cursor: pointer; transition: color 0.2s; }
+        .back-btn:hover { color: #fff; }
+        
+        .settings-container { max-width: 600px; width: 100%; margin: 40px auto; padding: 0 32px; display: flex; flex-direction: column; gap: 40px; }
+        .settings-section { display: flex; flex-direction: column; gap: 24px; }
+        .settings-section h2 { font-size: 20px; font-weight: 500; margin: 0; padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        
+        .setting-row { display: flex; flex-direction: column; gap: 8px; }
+        .setting-row label { font-size: 14px; color: #fff; font-weight: 500; }
+        .setting-desc { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 4px; }
+        .setting-input { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 14px 16px; border-radius: 12px; font-size: 14px; outline: none; transition: all 0.2s; font-family: inherit; }
+        .setting-input:focus { border-color: #7c3aed; background: rgba(255,255,255,0.06); box-shadow: 0 0 0 3px rgba(124,58,237,0.1); }
+        
+        .danger-zone { background: rgba(239,68,68,0.05); border: 1px solid rgba(239,68,68,0.2); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+        .danger-btn { background: rgba(239,68,68,0.1); color: #ef4444; border: 1px solid rgba(239,68,68,0.2); padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; transition: all 0.2s; align-self: flex-start; }
+        .danger-btn:hover { background: #ef4444; color: #fff; }
+
         .send-btn { width: 36px; height: 36px; border-radius: 12px; background: #fff; color: #000; display: flex; align-items: center; justify-content: center; border: none; cursor: pointer; transition: all 0.2s; }
         .send-btn:disabled { opacity: 0.2; cursor: not-allowed; }
         .send-btn:not(:disabled):hover { background: #7c3aed; color: #fff; }
@@ -208,140 +274,216 @@ export default function ChatPage() {
         @keyframes pulse-spin { 0% { transform: scale(0.9) rotate(0deg); opacity: 0.7; } 50% { transform: scale(1.1) rotate(180deg); opacity: 1; box-shadow: 0 0 20px rgba(124,58,237,0.4); } 100% { transform: scale(0.9) rotate(360deg); opacity: 0.7; } }
       `}</style>
 
-      {/* --- SIDEBAR --- */}
-      <aside className="sidebar">
-        <div className="brand-header">
-          <Link href="/" style={{ fontWeight: 600, letterSpacing: '-0.02em', fontSize: '15px', color: '#fff', textDecoration: 'none' }}>
-            CampusCopilot
-          </Link>
-          <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px' }}>
-            AM
-          </div>
-        </div>
+            {/* --- SIDEBAR --- */}
+            {/* --- SIDEBAR --- */}
+            <aside className={`sidebar ${isSidebarOpen ? 'open' : 'closed'}`}>
+                <div className="sidebar-content">
+                    <div className="brand-header">
+                        <Link href="/" style={{ fontWeight: 600, letterSpacing: '-0.02em', fontSize: '15px', color: '#fff', textDecoration: 'none' }}>
+                            CampusCopilot
+                        </Link>
+                        {/* Close Sidebar Button */}
+                        <button className="toggle-btn" onClick={() => setIsSidebarOpen(false)}>
+                            <PanelLeftClose size={18} />
+                        </button>
+                    </div>
 
-        <button className="sidebar-btn" onClick={startNewChat}>
-          <Plus size={16} /> New Chat
-        </button>
+                    <button className="sidebar-btn" onClick={startNewChat}>
+                        <Plus size={16} /> New Chat
+                    </button>
 
-        <div className="history-list">
-          <div style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '16px 0 8px 12px' }}>Recent</div>
-          
-          {/* SUPABASE THREAD MAPPING */}
-          {threads.length > 0 ? (
-            threads.map((t) => (
-              <div 
-                key={t.thread_id} 
-                className={`history-item ${activeThreadId === t.thread_id ? 'active' : ''}`}
-                onClick={() => setActiveThreadId(t.thread_id)}
-              >
-                <MessageSquare size={14} style={{ flexShrink: 0 }} /> 
-                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {t.title}
-                </span>
-              </div>
-            ))
-          ) : (
-            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.3)', padding: '0 12px' }}>No recent chats.</div>
-          )}
-        </div>
-      </aside>
+                    <div className="history-list">
+                        <div style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '16px 0 8px 12px' }}>Recent</div>
 
-      {/* --- MAIN CHAT --- */}
-      <main className="main-chat">
-        <header className="chat-nav">
-          <Settings size={20} color="rgba(255,255,255,0.4)" style={{ cursor: 'pointer' }} />
-        </header>
+                        {threads.length > 0 ? (
+                            threads.map((t) => (
+                                <div
+                                    key={t.thread_id}
+                                    className={`history-item ${activeThreadId === t.thread_id ? 'active' : ''}`}
+                                    onClick={() => setActiveThreadId(t.thread_id)}
+                                >
+                                    <MessageSquare size={14} style={{ flexShrink: 0 }} />
+                                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        {t.title}
+                                    </span>
+                                </div>
+                            ))
+                        ) : (
+                            <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.3)', padding: '0 12px' }}>No recent chats.</div>
+                        )}
+                    </div>
 
-        {isChatEmpty ? (
-          <div className="empty-state">
-            <h1 className="greeting">Good evening, Aman</h1>
-            <p className="sub-greeting">What can I help you with today?</p>
-            
-            <div className="pill-container">
-              <button className="prompt-pill" onClick={() => handleSend("Book the robotics lab for tomorrow at 3pm")}>
-                <Calendar size={14} /> Book robotics lab
-              </button>
-              <button className="prompt-pill" onClick={() => handleSend("What are the prerequisites for CNC machining?")}>
-                <Search size={14} /> Check prerequisites
-              </button>
-              <button className="prompt-pill" onClick={() => handleSend("Show my current attendance status")}>
-                <LayoutGrid size={14} /> View attendance
-              </button>
-            </div>
+                    {/* NEW PINNED USER FOOTER */}
+                    <div className="sidebar-footer" onClick={() => setCurrentView("settings")}>
+                        <div className="user-avatar">
+                            {activeUser.substring(0, 2).toUpperCase()}
+                        </div>
+                        <div className="user-info">
+                            <span className="user-name">{activeUser}</span>
+                            <span className="user-sub">Free plan</span>
+                        </div>
+                    </div>
+                </div>
+            </aside>
 
-            <div className="input-wrapper centered">
-              <form onSubmit={(e) => { e.preventDefault(); handleSend(); }} className="input-box">
-                <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask anything..." className="chat-input" disabled={isTyping} />
-                <button type="submit" className="send-btn" disabled={!input.trim() || isTyping}>
-                  <Send size={16} strokeWidth={2.5} style={{ marginLeft: '-2px' }} />
-                </button>
-              </form>
-            </div>
-            <p style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.3)' }}>AI can make mistakes. Please verify important actions.</p>
-          </div>
-        ) : (
-          <>
-            <div className="chat-scroll">
-              <div className="chat-container">
-              {messages.map((msg, idx) => (
-    <div key={idx} className={`message-row ${msg.role}`}>
-      <div className={`avatar ${msg.role}`}>
-        {msg.role === "assistant" ? <Bot size={18} /> : <User size={18} />}
-      </div>
-      <div className={`bubble ${msg.role}`}>
-      <ReactMarkdown
-  components={{
-    code({ node, inline, className, children, ...props }: any) {
-      const match = /language-(\w+)/.exec(className || "");
-      
-      return !inline && match ? (
-        // This is for large code blocks (like Python or Java snippets)
-        <div style={{ borderRadius: '8px', overflow: 'hidden', margin: '16px 0' }}>
-          <div style={{ background: '#1e1e1e', padding: '8px 16px', fontSize: '12px', color: '#888', borderBottom: '1px solid #333' }}>
-            {match[1]}
-          </div>
-          <SyntaxHighlighter
-            style={vscDarkPlus as any}
-            language={match[1]}
-            PreTag="div"
-            customStyle={{ margin: 0, padding: '16px', background: '#1e1e1e' }}
-            {...props}
-          >
-            {String(children).replace(/\n$/, "")}
-          </SyntaxHighlighter>
-        </div>
-      ) : (
-        // This is for small inline code (e.g., when it mentions `Integer` in a sentence)
-        <code style={{ background: "rgba(255,255,255,0.1)", padding: "2px 6px", borderRadius: "4px", fontSize: "0.9em" }} {...props}>
-          {children}
-        </code>
-      );
-    },
-  }}
->
-  {msg.content}
-</ReactMarkdown>      </div>                  </div>
-                ))}
-                {isTyping && (
-                  <div className="message-row assistant">
-                    <div className="ai-thinking" />
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            </div>
+            {currentView === "settings" ? (
+                <div className="settings-page">
+                    <header className="settings-nav">
+                        <button className="back-btn" onClick={() => setCurrentView("chat")}>
+                            ← Back to Chat
+                        </button>
+                    </header>
 
-            <div className="input-wrapper bottom">
-              <form onSubmit={(e) => { e.preventDefault(); handleSend(); }} className="input-box">
-                <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Message Campus Copilot..." className="chat-input" disabled={isTyping} />
-                <button type="submit" className="send-btn" disabled={!input.trim() || isTyping}>
-                  <Send size={16} strokeWidth={2.5} style={{ marginLeft: '-2px' }} />
-                </button>
-              </form>
-            </div>
-          </>
-        )}
-      </main>
+                    <div className="settings-container">
+                        <div className="settings-section">
+                            <h2>Account Settings</h2>
+
+                            <div className="setting-row">
+                                <label>Database User ID</label>
+                                <p className="setting-desc">Changing this will load a different user's chat history from Supabase.</p>
+                                <input
+                                    type="text"
+                                    className="setting-input"
+                                    value={activeUser}
+                                    onChange={(e) => setActiveUser(e.target.value)}
+                                    placeholder="e.g., aman_m_006"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="settings-section">
+                            <h2>Data Management</h2>
+
+                            <div className="danger-zone">
+                                <div className="setting-row">
+                                    <label style={{ color: '#ef4444' }}>Clear Chat History</label>
+                                    <p className="setting-desc">Permanently delete all messages and threads for the user <strong>{activeUser}</strong>.</p>
+                                </div>
+                                <button className="danger-btn" onClick={handleClearHistory}>
+                                    <Trash2 size={16} style={{ display: 'inline', verticalAlign: 'text-bottom', marginRight: '8px' }} />
+                                    Delete All Data
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                <main className="main-chat">
+                    <header className="chat-nav" style={{ justifyContent: !isSidebarOpen ? 'space-between' : 'flex-end' }}>
+                        {/* If sidebar is closed, show open button on the left */}
+                        {!isSidebarOpen && (
+                            <button className="toggle-btn" onClick={() => setIsSidebarOpen(true)}>
+                                <PanelLeftOpen size={20} />
+                            </button>
+                        )}
+                        
+                        <Settings
+                            size={20}
+                            color="rgba(255,255,255,0.4)"
+                            style={{ cursor: 'pointer', transition: 'color 0.2s' }}
+                            onClick={() => setCurrentView("settings")}
+                            onMouseEnter={(e) => e.currentTarget.style.color = '#fff'}
+                            onMouseLeave={(e) => e.currentTarget.style.color = 'rgba(255,255,255,0.4)'}
+                        />
+                    </header>
+                    
+                    {/* ... (Leave your chat messages code exactly as it is) ... */}
+
+
+                    {isChatEmpty ? (
+                        <div className="empty-state">
+                            <h1 className="greeting">Good evening, Aman</h1>
+                            <p className="sub-greeting">What can I help you with today?</p>
+
+                            <div className="pill-container">
+                                <button className="prompt-pill" onClick={() => handleSend("Book the robotics lab for tomorrow at 3pm")}>
+                                    <Calendar size={14} /> Book robotics lab
+                                </button>
+                                <button className="prompt-pill" onClick={() => handleSend("What are the prerequisites for CNC machining?")}>
+                                    <Search size={14} /> Check prerequisites
+                                </button>
+                                <button className="prompt-pill" onClick={() => handleSend("Show my current attendance status")}>
+                                    <LayoutGrid size={14} /> View attendance
+                                </button>
+                            </div>
+
+                            <div className="input-wrapper centered">
+                                <form onSubmit={(e) => { e.preventDefault(); handleSend(); }} className="input-box">
+                                    <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask anything..." className="chat-input" disabled={isTyping} />
+                                    <button type="submit" className="send-btn" disabled={!input.trim() || isTyping}>
+                                        <Send size={16} strokeWidth={2.5} style={{ marginLeft: '-2px' }} />
+                                    </button>
+                                </form>
+                            </div>
+                            <p style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.3)' }}>AI can make mistakes. Please verify important actions.</p>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="chat-scroll">
+                                <div className="chat-container">
+                                    {messages.map((msg, idx) => (
+                                        <div key={idx} className={`message-row ${msg.role}`}>
+                                            <div className={`avatar ${msg.role}`}>
+                                                {msg.role === "assistant" ? <Bot size={18} /> : <User size={18} />}
+                                            </div>
+                                            <div className={`bubble ${msg.role}`}>
+                                                <ReactMarkdown
+                                                    components={{
+                                                        code({ node, inline, className, children, ...props }: any) {
+                                                            const match = /language-(\w+)/.exec(className || "");
+
+                                                            return !inline && match ? (
+                                                                // This is for large code blocks (like Python or Java snippets)
+                                                                <div style={{ borderRadius: '8px', overflow: 'hidden', margin: '16px 0' }}>
+                                                                    <div style={{ background: '#1e1e1e', padding: '8px 16px', fontSize: '12px', color: '#888', borderBottom: '1px solid #333' }}>
+                                                                        {match[1]}
+                                                                    </div>
+                                                                    <SyntaxHighlighter
+                                                                        style={vscDarkPlus as any}
+                                                                        language={match[1]}
+                                                                        PreTag="div"
+                                                                        customStyle={{ margin: 0, padding: '16px', background: '#1e1e1e' }}
+                                                                        {...props}
+                                                                    >
+                                                                        {String(children).replace(/\n$/, "")}
+                                                                    </SyntaxHighlighter>
+                                                                </div>
+                                                            ) : (
+                                                                // This is for small inline code (e.g., when it mentions `Integer` in a sentence)
+                                                                <code style={{ background: "rgba(255,255,255,0.1)", padding: "2px 6px", borderRadius: "4px", fontSize: "0.9em" }} {...props}>
+                                                                    {children}
+                                                                </code>
+                                                            );
+                                                        },
+                                                    }}
+                                                >
+                                                    {msg.content}
+                                                </ReactMarkdown>      </div>                  </div>
+                                    ))}
+                                    {isTyping && (
+                                        <div className="message-row assistant">
+                                            <div className="ai-thinking" />
+                                        </div>
+                                    )}
+                                    <div ref={messagesEndRef} />
+                                </div>
+                            </div>
+
+                            <div className="input-wrapper bottom">
+                                <form onSubmit={(e) => { e.preventDefault(); handleSend(); }} className="input-box">
+                                    <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Message Campus Copilot..." className="chat-input" disabled={isTyping} />
+                                    <button type="submit" className="send-btn" disabled={!input.trim() || isTyping}>
+                                        <Send size={16} strokeWidth={2.5} style={{ marginLeft: '-2px' }} />
+                                    </button>
+                                </form>
+                            </div>
+                        </>
+                    )}
+
+                </main>
+            )}
     </div>
-  );
+
+    );
+
 }
