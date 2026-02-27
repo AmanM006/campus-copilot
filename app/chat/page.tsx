@@ -4,7 +4,9 @@ import {
   Send, Bot, User, Plus, MessageSquare, Settings, 
   Terminal, Search, LayoutGrid, Calendar, Trash2
 } from "lucide-react";
-import ReactMarkdown from "react-markdown"; // <-- 1. ADD THIS IMPORT
+import ReactMarkdown from "react-markdown";
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import Link from "next/link";
 import { supabase } from "@/lib/supabase"; // <-- This connects your DB!
 
@@ -287,10 +289,38 @@ export default function ChatPage() {
         {msg.role === "assistant" ? <Bot size={18} /> : <User size={18} />}
       </div>
       <div className={`bubble ${msg.role}`}>
-        <ReactMarkdown>
-          {msg.content}
-        </ReactMarkdown>
-      </div>                  </div>
+      <ReactMarkdown
+  components={{
+    code({ node, inline, className, children, ...props }: any) {
+      const match = /language-(\w+)/.exec(className || "");
+      
+      return !inline && match ? (
+        // This is for large code blocks (like Python or Java snippets)
+        <div style={{ borderRadius: '8px', overflow: 'hidden', margin: '16px 0' }}>
+          <div style={{ background: '#1e1e1e', padding: '8px 16px', fontSize: '12px', color: '#888', borderBottom: '1px solid #333' }}>
+            {match[1]}
+          </div>
+          <SyntaxHighlighter
+            style={vscDarkPlus as any}
+            language={match[1]}
+            PreTag="div"
+            customStyle={{ margin: 0, padding: '16px', background: '#1e1e1e' }}
+            {...props}
+          >
+            {String(children).replace(/\n$/, "")}
+          </SyntaxHighlighter>
+        </div>
+      ) : (
+        // This is for small inline code (e.g., when it mentions `Integer` in a sentence)
+        <code style={{ background: "rgba(255,255,255,0.1)", padding: "2px 6px", borderRadius: "4px", fontSize: "0.9em" }} {...props}>
+          {children}
+        </code>
+      );
+    },
+  }}
+>
+  {msg.content}
+</ReactMarkdown>      </div>                  </div>
                 ))}
                 {isTyping && (
                   <div className="message-row assistant">
