@@ -4,14 +4,6 @@ import { ArrowUpRight, Plus, Minus, ArrowDown, Terminal, Cloud, Layers, Calendar
 
 // Per-chat history store
 const CHAT_DATA: Record<string, { role: string; text: string }[]> = {
-  "hi...#0": [
-    { role: "user", text: "hi" },
-    { role: "assistant", text: "Hey! I'm Campus Copilot. You can ask me to book labs, check prerequisites, view your attendance or fees — just say the word." },
-  ],
-  "hi...#1": [
-    { role: "user", text: "hi" },
-    { role: "assistant", text: "Hello again! Ready to help with anything campus-related." },
-  ],
   "what is the heading of th...": [
     { role: "user", text: "What is the heading of the ME-102 safety manual?" },
     { role: "assistant", text: "The ME-102 Safety Manual is titled \"Machine Shop Safety & Operating Procedures\". It covers personal protective equipment requirements, machine startup checklists, and emergency shutdown protocols." },
@@ -23,10 +15,6 @@ const CHAT_DATA: Record<string, { role: string; text: string }[]> = {
   "Book the robotics lab for...": [
     { role: "user", text: "Book the robotics lab for tomorrow at 3pm and check CNC prerequisites." },
     { role: "assistant", text: "✅ Robotics lab booked for tomorrow, 3:00 PM.\n\n📋 CNC Prerequisites: You need to complete ME-102 Safety Certification before operating the CNC machine. Register for the next session on Friday at 11 AM." },
-  ],
-  "hello...": [
-    { role: "user", text: "hello" },
-    { role: "assistant", text: "Hi there! What can I help you with today? I can book labs, check your attendance, look up course prerequisites, or pull your fee status." },
   ],
 };
 
@@ -42,12 +30,9 @@ export default function CampusCopilot() {
   const [extraMessages, setExtraMessages] = useState<{ role: string; text: string }[]>([]);
 
   const recentChats = [
-    { label: "hi...", key: "hi...#0" },
-    { label: "hi...", key: "hi...#1" },
     { label: "what is the heading of th...", key: "what is the heading of th..." },
     { label: "What are the prerequisite...", key: "What are the prerequisite..." },
     { label: "Book the robotics lab for...", key: "Book the robotics lab for..." },
-    { label: "hello...", key: "hello..." },
   ];
 
   const currentMessages = activeChat && activeChat !== "__new__"
@@ -145,7 +130,7 @@ export default function CampusCopilot() {
           font-size: clamp(60px, 8.5vw, 120px); font-weight: 500;
           line-height: 0.95; letter-spacing: -0.03em; color: #fff;
         }
-        .s1-headline-fade { color: rgba(255,255,255,0.35); }
+        .s1-headline-fade { color: rgba(255,255,255,0.75); }
         .s1-right {
           max-width: 280px; text-align: right;
           font-size: 14px; line-height: 1.6; color: rgba(255,255,255,0.6);
@@ -156,6 +141,7 @@ export default function CampusCopilot() {
         .app-window-section {
           position: relative; z-index: 5; background: #f4f4f5;
           padding: 0 40px; display: flex; justify-content: center;
+          margin-top: -40px;
         }
         .app-window-wrap {
           width: 100%; max-width: 1100px; margin: 0 auto;
@@ -202,7 +188,7 @@ export default function CampusCopilot() {
         .app-main { display: flex; flex-direction: column; background: #0d0d0d; overflow: hidden; }
         .chat-messages { flex: 1; overflow-y: auto; padding: 32px 48px 16px; display: flex; flex-direction: column; gap: 20px; scrollbar-width: none; }
         .chat-messages::-webkit-scrollbar { display: none; }
-        .msg-welcome { text-align: center; padding: 48px 0 20px; }
+        .msg-welcome { text-align: center; padding: 48px 0 20px; margin-top:80px;}
         .msg-welcome h2 { font-size: 26px; font-weight: 600; color: #fff; letter-spacing: -0.02em; margin-bottom: 6px; }
         .msg-welcome p { font-size: 13px; color: rgba(255,255,255,0.4); }
         .quick-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
@@ -214,24 +200,24 @@ export default function CampusCopilot() {
         .bubble-content { max-width: 68%; padding: 12px 16px; border-radius: 16px; font-size: 13px; line-height: 1.6; white-space: pre-line; }
         .msg-bubble.assistant .bubble-content { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); color: rgba(255,255,255,0.85); border-radius: 4px 16px 16px 16px; }
         .msg-bubble.user .bubble-content { background: #7c3aed; color: #fff; border-radius: 16px 16px 4px 16px; }
-        .chat-input-area { padding: 16px 48px 20px; margin-bottom:150px; flex-shrink: 0; }
-        .chat-input-box { display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 12px 16px; transition: border-color 0.2s; }
+        .chat-input-area { padding: 16px 48px 20px; flex-shrink: 0; width:690px;margin-left:74px}
+        .chat-input-box { display: flex; margin-bottom:115px;align-items: center; gap: 12px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 12px 16px; transition: border-color 0.2s; }
         .chat-input-box:focus-within { border-color: rgba(124,58,237,0.5); }
         .chat-input { flex: 1; background: none; border: none; outline: none; font-size: 13px; color: #fff; font-family: 'DM Sans', sans-serif; }
         .chat-input::placeholder { color: rgba(255,255,255,0.3); }
-        .send-btn { width: 32px; height: 32px; border-radius: 8px; background: #ffffff; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #000000; transition: all 0.2s; }
+        .send-btn { width: 32px; height: 32px; border-radius: 8px; background: #ffffff; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #000; transition: all 0.2s; }
         .send-btn:hover { background: #ffffff; transform: scale(1.05); }
         .input-hint { text-align: center; margin-top: 8px; font-size: 10px; color: rgba(255,255,255,0.2); font-family: 'DM Mono', monospace; }
 
         /* ── S2 STATEMENT ── */
-        .s2 { display: flex; flex-direction: column; align-items: center; background: #f4f4f5; padding: 100px 40px 0; }
+        .s2 { display: flex; flex-direction: column; height:95vh; align-items: center; background: #f4f4f5; padding: 130px 40px 0; }
         .s2-grid { width: 100%; max-width: 1200px; display: grid; grid-template-columns: 7fr 5fr; gap: 80px; align-items: start; }
         .s2-headline { font-size: clamp(24px, 3.5vw, 44px); font-weight: 400; line-height: 1.25; letter-spacing: -0.02em; color: #111; }
         .s2-pill { display: inline-block; background: #111; color: #f4f4f5; padding: 2px 20px 6px; border-radius: 100px; font-size: clamp(22px, 3.2vw, 40px); font-weight: 400; margin: 0 4px; vertical-align: middle; }
         .s2-body { font-size: 15px; color: rgba(0,0,0,0.6); line-height: 1.7; margin-bottom: 24px; }
         .s2-more { display: flex; align-items: center; gap: 6px; padding-top: 24px; border-top: 1px solid rgba(0,0,0,0.1); font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #000; cursor: pointer; transition: opacity .2s; }
         .s2-more:hover { opacity: 0.6; }
-        .s2-bottom-bar { display: flex; align-items: center; justify-content: space-between; padding: 28px 0; border-top: 1px solid rgba(0,0,0,0.1); margin-top: 80px; width: 100%; max-width: 1200px; }
+        .s2-bottom-bar { display: flex; align-items: center; justify-content: space-between; padding: 28px 0; border-top: 1px solid rgba(0,0,0,0.9); margin-top: 175px; width: 100%; max-width: 1500px; }
         .s2-b-text { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer; display: flex; align-items: center; gap: 6px; color: #000; }
         .s2-b-tech { display: flex; gap: 32px; }
 
@@ -256,7 +242,7 @@ export default function CampusCopilot() {
         .cap-item-desc { font-size: 14px; color: rgba(255,255,255,0.5); line-height: 1.6; }
 
         /* ── PRICING (100vh) ── */
-        .pricing-section { height: 100vh; background: #000; display: flex; align-items: center; padding: 0 40px; }
+        .pricing-section { height: 100vh; padding-top:150px;background: #000; display: flex; align-items: center; }
         .pricing-inner { width: 100%; max-width: 1200px; margin: 0 auto; }
         .pricing-header { display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: end; margin-bottom: 48px; }
         .pricing-eyebrow { font-family: 'DM Mono', monospace; color: #7c3aed; text-transform: uppercase; letter-spacing: 0.2em; font-size: 12px; margin-bottom: 20px; display: block; }
@@ -284,7 +270,7 @@ export default function CampusCopilot() {
         .market-stat-label { font-size: 12px; color: rgba(255,255,255,0.35); }
 
         /* ── FAQ (100vh) ── */
-        .faq-section { height: 100vh; padding: 0 40px; background: #050505; display: flex; align-items: center; }
+        .faq-section { height: 100vh; padding: 0 40px; background: #000000;padding-top:350px; display: flex; align-items: center; }
         .faq-inner { width: 100%; max-width: 1200px; margin: 0 auto; }
         .faq-header { margin-bottom: 48px; }
         .faq-title { font-size: clamp(36px, 4.5vw, 56px); font-weight: 500; line-height: 1.05; color: #fff; letter-spacing: -0.03em; }
@@ -299,7 +285,7 @@ export default function CampusCopilot() {
         .faq-ans-inner { padding-bottom: 20px; font-size: 14px; color: rgba(255,255,255,0.5); line-height: 1.7; max-width: 800px; }
 
         /* ── FOOTER ── */
-        .footer { background: #000; padding: 60px 40px 0; border-top: 1px solid rgba(255,255,255,0.05); }
+        .footer { background: #000; padding: 250px 40px 0; border-top: 1px solid rgba(255,255,255,0.05); }
         .footer-top { display: flex; justify-content: space-between; align-items: center; padding-bottom: 80px; flex-wrap: wrap; gap: 24px; }
         .footer-links { display: flex; gap: 32px; flex-wrap: wrap; }
         .footer-links a { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: rgba(255,255,255,0.5); transition: color .2s; font-weight: 500; }
@@ -311,7 +297,6 @@ export default function CampusCopilot() {
       <nav className="nav">
         <span className="nav-logo" onClick={() => scrollTo("hero")}>CampusCopilot</span>
         <div className="nav-links">
-          <a onClick={() => scrollTo("features")}>Architecture</a>
           <a onClick={() => scrollTo("features")}>Features</a>
           <a onClick={() => scrollTo("pricing")}>Pricing</a>
           <a onClick={() => scrollTo("faq")}>FAQ</a>
@@ -370,9 +355,10 @@ export default function CampusCopilot() {
                   </div>
                 ))}
                 <div className="sidebar-footer">
-                  <div className="user-avatar">A</div>
+                  <div className="user-avatar">N</div>
                   <div className="user-info">
                     <div className="user-name">aman_m_006</div>
+                    <div className="user-plan">Free plan</div>
                   </div>
                   <div className="sidebar-icon-btn" style={{ marginLeft: "auto" }}><Settings size={13} /></div>
                 </div>

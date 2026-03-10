@@ -84,4 +84,4 @@ def upload_pdf_to_pinecone(file_path):
 # --- RUN THE SCRIPT ---
 if __name__ == "__main__":
     # Make sure you put a sample PDF in your backend/data folder!
-    upload_pdf_to_pinecone("data/OSDL manual (1).pdf")
+    upload_pdf_to_pinecone("data/Course structure_CS Stream-2025 (1).pdf")
