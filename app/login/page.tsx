@@ -1,277 +1,236 @@
 "use client";
+// app/login/page.tsx  v4
+// ─────────────────────────────────────────────────────────────────────────────
+// Changes:
+//  1. Microsoft SSO button — collects institutional email, calls /api/microsoft-auth
+//     which auto-creates the user if domain is registered
+//  2. Email+password fallback — looks up via lookupUserByEmail (exact + ILIKE)
+//  3. Clear error messages (tells user if domain not registered vs wrong password)
+
 import React, { useState } from "react";
-import { ArrowLeft, ArrowRight, AlertCircle } from "lucide-react";
+import { ArrowLeft, ArrowRight, Eye, EyeOff, AlertCircle, CheckCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AUTHORISED ACCOUNTS — add/remove emails here for the prototype
-// Role is auto-detected from domain:
-//   @learner.manipal.edu  →  student  →  /chat
-//   @manipal.edu          →  faculty  →  /teacher
-// ─────────────────────────────────────────────────────────────────────────────
-const ACCOUNTS: Record<string, { name: string; password: string }> = {
-  // ── Students ──────────────────────────────────────────────────────────────
-  "240957160@learner.manipal.edu":  { name: "Aman Mishra",          password: "demo" },
-  "213cs1001@learner.manipal.edu":  { name: "Aman Mehta",           password: "demo" },
-  "213cs1002@learner.manipal.edu":  { name: "Priya Nair",           password: "demo" },
-
-  // ── Faculty ───────────────────────────────────────────────────────────────
-  "kkp.prakash@manipal.edu":        { name: "Krishna Prakasha K",   password: "demo" },
-  "priya.sharma@manipal.edu":       { name: "Dr. Priya Sharma",     password: "demo" },
-};
-
-function detectRole(email: string): "student" | "faculty" | null {
-  const domain = email.split("@")[1]?.toLowerCase();
-  if (domain === "learner.manipal.edu") return "student";
-  if (domain === "manipal.edu")         return "faculty";
-  return null;
-}
+import {
+  lookupUserByEmail, persistSession, dashboardFor,
+  guessRoleFromEmail, emailToId, upsertUser,
+} from "@/lib/auth";
 
 export default function LoginPage() {
-  const router   = useRouter();
+  const router = useRouter();
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
+  const [showPw,   setShowPw]   = useState(false);
   const [error,    setError]    = useState("");
+  const [info,     setInfo]     = useState("");
   const [loading,  setLoading]  = useState(false);
+  const [ssoLoading, setSsoLoading] = useState(false);
 
-  const attemptLogin = (rawEmail: string, rawPassword: string) => {
-    setError("");
+  // ── Email + password login ────────────────────────────────────────────────
+  const attempt = async (rawEmail: string, rawPw: string) => {
+    setError(""); setInfo(""); setLoading(true);
     const e = rawEmail.trim().toLowerCase();
-    const account = ACCOUNTS[e];
 
-    if (!account) {
-      setError("Email not recognised. Contact your administrator.");
-      return;
-    }
-    if (account.password !== rawPassword) {
-      setError("Incorrect password.");
-      return;
-    }
-    const role = detectRole(e);
-    if (!role) {
-      setError("Email domain not supported.");
-      return;
+    if (rawPw.trim() !== "demo") {
+      setError("Incorrect password. Default password is: demo");
+      setLoading(false); return;
     }
 
-    setLoading(true);
-    // Store session (replace with real JWT/session cookie in production)
-    sessionStorage.setItem("cc_email", e);
-    sessionStorage.setItem("cc_name",  account.name);
-    sessionStorage.setItem("cc_role",  role);
+    const user = await lookupUserByEmail(e);
+    if (!user) {
+      // Try auto-creating from domain if college is registered
+      const domain = e.split("@")[1] || "";
+      const created = await tryAutoCreate(e, domain);
+      if (created) {
+        persistSession(created);
+        router.push(dashboardFor(created.role));
+        return;
+      }
+      setError(
+        `"${e}" is not in the system yet.\n\n` +
+        `If your college is registered:\n` +
+        `→ Ask your admin to add your email in Admin → User Registry\n` +
+        `→ Or use the Microsoft SSO button below\n\n` +
+        `If you're an admin setting up a new college:\n` +
+        `→ Complete onboarding at /onboarding first`
+      );
+      setLoading(false); return;
+    }
 
-    setTimeout(() => {
-      router.push(role === "faculty" ? "/teacher" : "/chat");
-    }, 800);
+    persistSession(user);
+    router.push(dashboardFor(user.role));
   };
 
-  const handleSubmit = (ev: React.FormEvent) => {
-    ev.preventDefault();
-    attemptLogin(email, password);
+  // ── Auto-create if domain is from a registered college ───────────────────
+  const tryAutoCreate = async (email: string, domain: string) => {
+    try {
+      const { supabase } = await import("@/lib/supabase");
+      // Check if any integration_sources matches this domain
+      const domainBase = domain.split(".").slice(-2).join(".");
+      const { data } = await supabase
+        .from("integration_sources")
+        .select("college_name")
+        .ilike("portal_url", `%${domainBase}%`)
+        .eq("active", true)
+        .limit(1)
+        .maybeSingle();
+
+      if (!data) return null;
+
+      const role = guessRoleFromEmail(email);
+      const id   = emailToId(email);
+      const user = {
+        id,
+        email:       email.toLowerCase(),
+        name:        email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
+        role,
+        department:  data.college_name,
+        designation: role === "student" ? "Student" : "Faculty",
+      };
+      const ok = await upsertUser(user);
+      return ok ? user : null;
+    } catch { return null; }
   };
 
-  // Simulated Microsoft SSO — in production wire up MSAL.js here
-  // The token from Azure AD will contain user.mail which we compare against ACCOUNTS
-  const handleMicrosoftSSO = () => {
-    const mockEmail = window.prompt("🔵 Microsoft SSO (prototype)\n\nEnter your Manipal email:");
-    if (!mockEmail) return;
-    attemptLogin(mockEmail, "demo"); // SSO skips password check in real flow
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) { setError("Please enter your email."); return; }
+    if (!password.trim()) { setError("Please enter your password."); return; }
+    attempt(email, password);
+  };
+
+  // ── Microsoft SSO ─────────────────────────────────────────────────────────
+  // In production: replace prompt() with real MSAL / Azure AD OAuth flow.
+  // The /api/microsoft-auth route handles creating the user in Supabase.
+  const handleMicrosoft = async () => {
+    setSsoLoading(true);
+    setError(""); setInfo("");
+
+    // Simulate Microsoft OAuth — collect email (in real app this comes from
+    // Azure AD id_token after redirect)
+    const msEmail = window.prompt(
+      "Microsoft SSO — Enter your institutional email:\n(In production this popup is replaced by Azure AD)"
+    );
+    if (!msEmail) { setSsoLoading(false); return; }
+
+    try {
+      const resp = await fetch("/api/microsoft-auth", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          email: msEmail.trim().toLowerCase(),
+          name:  msEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, c => c.toUpperCase()),
+          // In real OAuth: also send id_token, access_token from MSAL
+        }),
+      });
+      const data = await resp.json();
+
+      if (data.success && data.user) {
+        persistSession(data.user);
+        router.push(dashboardFor(data.user.role));
+      } else {
+        setError(data.error || "Microsoft login failed");
+      }
+    } catch (err: any) {
+      setError(`SSO error: ${err.message}`);
+    } finally {
+      setSsoLoading(false);
+    }
   };
 
   return (
-    <div style={{
-      fontFamily: "'DM Sans', sans-serif", height: "100vh", width: "100vw",
-      overflow: "hidden", position: "relative", display: "flex",
-      flexDirection: "column", color: "#fff",
-    }}>
+    <div style={{ fontFamily:"'DM Sans',sans-serif", height:"100vh", background:"#000", color:"#fff", display:"flex", flexDirection:"column" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&display=swap');
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        ::selection { background: #7c3aed; color: #fff; }
-
-        .login-bg {
-          position: absolute; inset: 0; z-index: 0; background: #000;
-        }
-        .login-bg::before {
-          content: ''; position: absolute; inset: 0;
-          background: radial-gradient(ellipse 100% 100% at 50% -20%, rgba(109,40,217,0.4) 0%, rgba(10,10,10,1) 60%);
-          pointer-events: none;
-        }
-
-        .login-container {
-          position: relative; z-index: 10; flex: 1;
-          display: flex; flex-direction: column;
-          align-items: center; justify-content: center;
-          padding: 40px 20px;
-        }
-        .login-content { width: 100%; max-width: 420px; }
-
-        .login-headline {
-          font-size: clamp(42px, 6vw, 68px);
-          font-weight: 500; letter-spacing: -0.04em;
-          line-height: 0.95; margin-bottom: 14px; color: #fff;
-        }
-        .login-sub {
-          color: rgba(255,255,255,0.45); font-size: 15px;
-          line-height: 1.6; margin-bottom: 40px;
-        }
-
-        .pill-input {
-          width: 100%; height: 54px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 100px;
-          padding: 0 24px; color: #fff; font-size: 15px;
-          font-family: 'DM Sans', sans-serif;
-          transition: all 0.25s; outline: none; margin-bottom: 12px; display: block;
-        }
-        .pill-input:focus {
-          border-color: #7c3aed;
-          background: rgba(124,58,237,0.06);
-          box-shadow: 0 0 0 3px rgba(124,58,237,0.12);
-        }
-        .pill-input::placeholder { color: rgba(255,255,255,0.28); }
-
-        .pill-btn-primary {
-          width: 100%; height: 54px;
-          background: #fff; color: #000;
-          border: none; border-radius: 100px;
-          font-size: 13px; font-weight: 700;
-          letter-spacing: 0.06em; text-transform: uppercase;
-          cursor: pointer; display: flex;
-          align-items: center; justify-content: center; gap: 8px;
-          transition: all 0.25s; margin-top: 4px;
-        }
-        .pill-btn-primary:hover:not(:disabled) {
-          transform: translateY(-2px);
-          box-shadow: 0 8px 24px rgba(255,255,255,0.12);
-        }
-        .pill-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .pill-btn-ms {
-          width: 100%; height: 54px;
-          background: rgba(255,255,255,0.04); color: #fff;
-          border: 1px solid rgba(255,255,255,0.1); border-radius: 100px;
-          font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif;
-          cursor: pointer; display: flex; align-items: center;
-          justify-content: center; gap: 11px; transition: all 0.25s;
-          margin-bottom: 28px;
-        }
-        .pill-btn-ms:hover {
-          background: rgba(255,255,255,0.08);
-          border-color: rgba(255,255,255,0.2);
-        }
-
-        .divider {
-          display: flex; align-items: center; color: rgba(255,255,255,0.2);
-          font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
-          margin: 28px 0;
-        }
-        .divider::before, .divider::after {
-          content: ''; flex: 1;
-          border-bottom: 1px solid rgba(255,255,255,0.07);
-        }
-        .divider::before { margin-right: 12px; }
-        .divider::after  { margin-left:  12px; }
-
-        .error-box {
-          display: flex; align-items: center; gap: 9px;
-          background: rgba(239,68,68,0.08);
-          border: 1px solid rgba(239,68,68,0.22);
-          border-radius: 12px; padding: 11px 16px;
-          font-size: 13px; color: #fca5a5; margin-bottom: 14px;
-          animation: err-in 0.2s ease;
-        }
-        @keyframes err-in { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
-
-        .role-hint {
-          margin-top: 28px; text-align: center;
-          font-size: 11px; color: rgba(255,255,255,0.18);
-          font-family: 'DM Mono', monospace; letter-spacing: 0.08em;
-          line-height: 1.8;
-        }
-        .role-dot-student { color: #a78bfa; }
-        .role-dot-faculty { color: #60a5fa; }
-
-        .loader {
-          width: 17px; height: 17px;
-          border: 2px solid rgba(0,0,0,0.15);
-          border-bottom-color: #000; border-radius: 50%;
-          animation: spin 0.8s linear infinite; display: inline-block;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+        .bg{position:fixed;inset:0;background:radial-gradient(ellipse 120% 80% at 50% -10%,rgba(47,128,237,0.22) 0%,#000 55%);}
+        .field{width:100%;height:50px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:0 14px;color:#fff;font-size:14px;font-family:'DM Sans',sans-serif;outline:none;transition:border-color .2s;}
+        .field:focus{border-color:rgba(47,128,237,0.6);}
+        .field::placeholder{color:rgba(255,255,255,0.25);}
+        .btn-ms{width:100%;height:50px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:#fff;font-size:14px;font-weight:500;font-family:'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:11px;transition:all .2s;margin-bottom:20px;}
+        .btn-ms:hover:not(:disabled){background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.2);}
+        .btn-ms:disabled{opacity:0.5;cursor:not-allowed;}
+        .btn-main{width:100%;height:50px;background:#2f80ed;border:none;border-radius:10px;color:#fff;font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s;font-family:'DM Sans',sans-serif;}
+        .btn-main:hover:not(:disabled){background:#1d6cd9;transform:translateY(-1px);}
+        .btn-main:disabled{opacity:.5;cursor:not-allowed;}
+        .divider{display:flex;align-items:center;color:rgba(255,255,255,0.2);font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:20px 0;}
+        .divider::before,.divider::after{content:'';flex:1;border-bottom:1px solid rgba(255,255,255,0.07);}
+        .divider::before{margin-right:12px;}.divider::after{margin-left:12px;}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;}
       `}</style>
 
-      <div className="login-bg" />
+      <div className="bg" />
 
-      {/* Back nav */}
-      <nav style={{ position:"absolute", top:0, left:0, right:0, zIndex:100, padding:"28px 36px" }}>
-        <Link href="/" style={{
-          display:"flex", alignItems:"center", gap:7,
-          fontSize:11, fontWeight:700, textTransform:"uppercase",
-          letterSpacing:"0.06em", color:"rgba(255,255,255,0.4)",
-          width:"max-content", textDecoration:"none", transition:"color 0.2s",
-        }}
-          onMouseOver={e => (e.currentTarget.style.color="#fff")}
-          onMouseOut={e  => (e.currentTarget.style.color="rgba(255,255,255,0.4)")}>
-          <ArrowLeft size={13}/> Return
+      <nav style={{ position:"relative", zIndex:10, padding:"22px 36px" }}>
+        <Link href="/" style={{ display:"flex", alignItems:"center", gap:6, fontSize:11, fontWeight:700, textTransform:"uppercase", letterSpacing:".06em", color:"rgba(255,255,255,.35)", textDecoration:"none" }}>
+          <ArrowLeft size={13} /> Back
         </Link>
       </nav>
 
-      <div className="login-container">
-        <div className="login-content">
-
-          <h1 className="login-headline">Sign in to<br/>Copilot.</h1>
-          <p className="login-sub">Your unified campus intelligence platform.</p>
+      <div style={{ flex:1, position:"relative", zIndex:10, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
+        <div style={{ width:"100%", maxWidth:400 }}>
+          <div style={{ fontSize:34, fontWeight:500, letterSpacing:"-0.03em", marginBottom:6 }}>Sign in</div>
+          <div style={{ fontSize:14, color:"rgba(255,255,255,.4)", marginBottom:28 }}>CampusCopilot — your institutional account</div>
 
           {/* Microsoft SSO */}
-          <button className="pill-btn-ms" onClick={handleMicrosoftSSO}>
-            <svg width="18" height="18" viewBox="0 0 21 21" fill="none">
-              <rect x="1"  y="1"  width="9" height="9" fill="#F25022"/>
-              <rect x="11" y="1"  width="9" height="9" fill="#7FBA00"/>
-              <rect x="1"  y="11" width="9" height="9" fill="#00A4EF"/>
-              <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
-            </svg>
+          <button className="btn-ms" onClick={handleMicrosoft} disabled={ssoLoading}>
+            {ssoLoading ? <span className="spin"/> : (
+              <svg width="18" height="18" viewBox="0 0 21 21" fill="none">
+                <rect x="1"  y="1"  width="9" height="9" fill="#F25022"/>
+                <rect x="11" y="1"  width="9" height="9" fill="#7FBA00"/>
+                <rect x="1"  y="11" width="9" height="9" fill="#00A4EF"/>
+                <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
+              </svg>
+            )}
             Continue with Microsoft
           </button>
 
-          <div className="divider">or sign in with email</div>
+          <div className="divider">or sign in with email + password</div>
 
           {/* Error */}
           {error && (
-            <div className="error-box">
-              <AlertCircle size={15} style={{ flexShrink:0 }}/>
-              {error}
+            <div style={{ display:"flex", gap:9, background:"rgba(239,68,68,.08)", border:"1px solid rgba(239,68,68,.2)", borderRadius:10, padding:"11px 14px", fontSize:12, color:"#fca5a5", marginBottom:14, whiteSpace:"pre-wrap", lineHeight:1.7 }}>
+              <AlertCircle size={14} style={{ flexShrink:0, marginTop:2 }} />
+              <span>{error}</span>
             </div>
           )}
 
-          {/* Email + password form */}
-          <form onSubmit={handleSubmit}>
-            <input
-              id="email-input"
-              type="email"
-              placeholder="Manipal email address"
-              className="pill-input"
-              value={email}
-              onChange={e => { setEmail(e.target.value); setError(""); }}
-              required
-              autoComplete="email"
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              className="pill-input"
-              value={password}
-              onChange={e => { setPassword(e.target.value); setError(""); }}
-              required
-              autoComplete="current-password"
-            />
-            <button type="submit" className="pill-btn-primary" disabled={loading}>
-              {loading ? <span className="loader"/> : <> Sign In <ArrowRight size={15}/> </>}
+          {/* Info */}
+          {info && (
+            <div style={{ display:"flex", gap:9, background:"rgba(16,185,129,.08)", border:"1px solid rgba(16,185,129,.2)", borderRadius:10, padding:"11px 14px", fontSize:12, color:"#4ade80", marginBottom:14 }}>
+              <CheckCircle size={14} style={{ flexShrink:0, marginTop:1 }} />
+              <span>{info}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            <input type="email" placeholder="Institutional email" className="field"
+              value={email} onChange={e => { setEmail(e.target.value); setError(""); }}
+              autoComplete="email" />
+            <div style={{ position:"relative" }}>
+              <input type={showPw ? "text" : "password"} placeholder="Password (default: demo)" className="field"
+                value={password} onChange={e => { setPassword(e.target.value); setError(""); }}
+                style={{ paddingRight:44 }} />
+              <button type="button" onClick={() => setShowPw(p=>!p)}
+                style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", background:"transparent", border:"none", color:"rgba(255,255,255,.3)", cursor:"pointer", display:"flex", padding:4 }}>
+                {showPw ? <EyeOff size={15}/> : <Eye size={15}/>}
+              </button>
+            </div>
+            <button type="submit" className="btn-main" disabled={loading} style={{ marginTop:4 }}>
+              {loading ? <span className="spin"/> : <>Sign In <ArrowRight size={14}/></>}
             </button>
           </form>
 
-
+          <div style={{ marginTop:24, padding:"14px 16px", background:"rgba(255,255,255,.02)", border:"1px solid rgba(255,255,255,.06)", borderRadius:10, fontSize:11, color:"rgba(255,255,255,.3)", fontFamily:"'DM Mono',monospace", lineHeight:2 }}>
+            <div>@learner.manipal.edu → Student → /chat</div>
+            <div>@manipal.edu → Faculty → /teacher</div>
+            <div>Admin (from onboarding) → /admin</div>
+            <div style={{ marginTop:4 }}>Default password: <span style={{ color:"rgba(255,255,255,.55)" }}>demo</span></div>
+            <div style={{ marginTop:6, fontSize:10, color:"rgba(255,255,255,.2)" }}>
+              If your email is not found, ask your admin to add it in<br/>Admin → User Registry → Add User
+            </div>
+          </div>
         </div>
       </div>
     </div>

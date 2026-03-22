@@ -7,7 +7,7 @@ node_modules/
 .next/
 out/
 build/
-
+server/sessions/
 # Python
 __pycache__/
 *.pyc
