@@ -8,6 +8,8 @@ import {
   AlertTriangle, ExternalLink
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { AttendanceMarksImport } from "@/components/teacher/AttendanceMarksImport";
+import { getStudentsInSubject, getSubjectAnalytics } from "@/lib/db_extended";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -230,7 +232,14 @@ function SubjectsView({ facultyId }: { facultyId: string }) {
   const [openId, setOpenId] = useState<string | null>(null);
 
   const openSubject = openId ? (subjects || []).find((s: any) => s.id === openId) : null;
-
+  const [showImport, setShowImport] = useState(false);
+  const [importStudents, setImportStudents] = useState<any[]>([]);
+  useEffect(() => {
+    if (openSubject) {
+      getStudentsInSubject(openSubject.id).then(setImportStudents);
+    }
+  }, [openSubject]);
+  
   // Inner doc panel
   const { docs, loading: docLoading, upload, remove } = useDocuments(openId);
   const [uploading, setUploading] = useState(false);
@@ -249,6 +258,7 @@ function SubjectsView({ facultyId }: { facultyId: string }) {
     } catch (e: any) { notify(`❌ Upload failed: ${e.message}`); }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = ""; }
   };
+  
 
   const handleDelete = async (doc: DBDocument) => {
     if (!confirm(`Remove "${doc.name}"?`)) return;
@@ -263,7 +273,34 @@ function SubjectsView({ facultyId }: { facultyId: string }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 22 }}>
         <div style={{ width: 44, height: 44, borderRadius: 12, background: `${openSubject.color}20`, border: `1px solid ${openSubject.color}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: openSubject.color }}>{openSubject.code.split(" ")[1]}</div>
         <div><div style={{ fontFamily: "'Syne',sans-serif", fontSize: 20, fontWeight: 700, color: "#fff" }}>{openSubject.name}</div><div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{openSubject.code}</div></div>
+        
+        {/* NEW: Import Button */}
+        <button onClick={() => setShowImport(p => !p)} style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "8px 14px", marginLeft: "auto",
+          background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.25)",
+          borderRadius: 9, color: "#4ade80", fontSize: 12, fontWeight: 600, cursor: "pointer",
+        }}>
+          📊 Import Attendance / Marks
+        </button>
       </div>
+
+      {/* NEW: Import Panel */}
+      {showImport && (
+        <div style={{ marginBottom: 20, padding: "16px 18px", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 14 }}>
+            Import Attendance & Marks — {openSubject.code}
+          </div>
+          <AttendanceMarksImport
+            subjectId={openSubject.id}
+            subjectCode={openSubject.code}
+            facultyId={facultyId}
+            students={importStudents}
+            onDone={() => setShowImport(false)}
+          />
+        </div>
+      )}
+
       <div style={{ background: "rgba(14,165,233,0.05)", border: "2px dashed rgba(14,165,233,0.2)", borderRadius: 14, padding: "20px 24px", marginBottom: 20, display: "flex", alignItems: "center", gap: 16 }}>
         <Upload size={20} style={{ color: "#0ea5e9", flexShrink: 0 }} />
         <div style={{ flex: 1 }}>
@@ -339,7 +376,17 @@ function AnalyticsView({ facultyId, onAsk, setView }: { facultyId: string; onAsk
   const allRecords: any[] = Object.values(attMap || {}).flat();
   const subjectCodes = Object.keys(attMap || {});
   const activeSubject = selSubject || subjectCodes[0] || "";
-  const activeRecords: any[] = (attMap || {})[activeSubject] || [];
+  
+  // NEW: Fetch live student list for analytics drill down
+  const [analytics, setAnalytics] = useState<any>(null);
+  useEffect(() => {
+    if (activeSubject) {
+      getSubjectAnalytics(activeSubject).then(setAnalytics);
+    }
+  }, [activeSubject]);
+
+  const activeRecords: any[] = analytics?.students || (attMap || {})[activeSubject] || [];
+
   const totalUniq   = new Set(allRecords.map((s: any) => s.student?.id)).size;
   const below75     = allRecords.filter((s: any) => s.percentage < 75);
   const avgAtt      = allRecords.length ? Math.round(allRecords.reduce((a, s) => a + s.percentage, 0) / allRecords.length) : 0;

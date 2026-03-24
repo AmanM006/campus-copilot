@@ -16,26 +16,22 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { SyncBanner, SyncIndicator } from "@/components/SyncBanner";
 
 // ── NEW: real data ─────────────────────────────────────────────────────────────
-import {
-  useStudentAttendance,
-  useStudentExams,
-  useStudentSchedule,
-  useStudentLabRequests,
-  useNotifications,
-} from "@/hooks/useData";
 import NotificationBell from "@/components/NotificationBell";
+import { useStudentSession }                       from "@/hooks/useStudentSession";
+import { useLiveAttendance, useLiveExams, useLiveSchedule } from "@/hooks/useLiveData";
+import { enrichContext }                           from "@/lib/queryRouter";
 import type { AttendanceWithSubject, ExamWithSubject, DBScheduleSlot } from "@/lib/types";
+import { MarksPanel } from "@/components/student/MarksPanel";
+import { useStudentMarks } from "@/hooks/useMarks";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Message { id?: string; role: "user" | "assistant"; content: string; thread_id: string; action?: any; sources?: any[]; }
 interface Thread { thread_id: string; title: string; }
 
-const STUDENT_FALLBACK = {
-  id: "213CS1001", name: "Aman Mehta", program: "SCE", semester: 4,
-  branch: "Computer Science & Engineering", cgpa: 8.4, initials: "AM", year: "2nd Year",
-};
+// STUDENT_FALLBACK removed — replaced by useStudentSession hook
 
 const QUICK_PROMPTS = [
   { icon: FlaskConical, label: "Request a lab slot",          text: "I need to use the robotics lab tomorrow afternoon" },
@@ -211,16 +207,17 @@ function TimetablePopup({ day, slots, onClose, onAsk }: { day: string; slots: an
 // ─── Dashboard Panel — FULLY LIVE ─────────────────────────────────────────────
 function DashboardPanel({ onClose, onAsk, student }: {
   onClose: () => void; onAsk: (q: string) => void;
-  student: typeof STUDENT_FALLBACK;
+  student: any;
 }) {
-  const [activeTab,    setActiveTab]    = useState<"schedule" | "attendance" | "exams">("schedule");
+  const [activeTab,    setActiveTab]    = useState<"schedule" | "attendance" | "exams" | "marks">("schedule");
   const [attDetail,    setAttDetail]    = useState<AttendanceWithSubject | null>(null);
   const [timetableDay, setTimetableDay] = useState<string | null>(null);
   const [timetableSlots, setTimetableSlots] = useState<any[]>([]);
 
-  const { data: attendance, loading: attLoading }  = useStudentAttendance(student.id);
-  const { data: exams,      loading: exLoading  }  = useStudentExams(student.id);
-  const { data: schedule,   loading: schedLoading } = useStudentSchedule(student.id);
+  const _email = student.email || (typeof window !== "undefined" ? sessionStorage.getItem("cc_email") || "" : "");
+  const { data: attendance, loading: attLoading } = useLiveAttendance(student.id, _email);
+  const { data: exams,      loading: exLoading  } = useLiveExams(student.id);
+  const { data: schedule,   loading: schedLoading } = useLiveSchedule(student.id);
 
   const now       = new Date();
   const todayName = getDayName(0), tomorrowName = getDayName(1);
@@ -263,12 +260,12 @@ function DashboardPanel({ onClose, onAsk, student }: {
       {timetableDay && <TimetablePopup day={timetableDay} slots={timetableSlots} onClose={() => setTimetableDay(null)} onAsk={onAsk} />}
       <aside className="dash-panel">
         <div className="dash-header">
-          <div><div className="dash-greeting">Hi, {student.name.split(" ")[0]} 👋</div><div className="dash-time">{now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · {now.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" })}</div></div>
+          <div><div className="dash-greeting">Hi, {student.name?.split(" ")[0]} 👋</div><div className="dash-time">{now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · {now.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" })}</div></div>
           <button className="icon-btn" onClick={onClose}><PanelRightClose size={17} /></button>
         </div>
         <div className="student-strip">
           <div className="student-avatar">{student.initials}</div>
-          <div className="student-info"><div className="student-name">{student.name}</div><div className="student-meta">{student.id} · {student.branch.split(" ")[0]} · Sem {student.semester}</div></div>
+          <div className="student-info"><div className="student-name">{student.name}</div><div className="student-meta">{student.id} · {student.branch?.split(" ")[0]} · Sem {student.semester}</div></div>
           <div className="student-cgpa"><div className="cgpa-val">{student.cgpa}</div><div className="cgpa-label">CGPA</div></div>
         </div>
         <div className="insights-strip">
@@ -279,7 +276,7 @@ function DashboardPanel({ onClose, onAsk, student }: {
           <div className={`stat-card ${!nextExam ? "stat-ok" : nextExam.days_left <= 3 ? "stat-danger" : nextExam.days_left <= 7 ? "stat-warn-card" : "stat-ok"}`}><div className="stat-icon"><BookOpen size={13} /></div><div className="stat-val">{exLoading ? "…" : nextExam ? `${nextExam.days_left}d` : "Done"}</div><div className="stat-label">Next exam</div><div className="stat-sub">{nextExam ? nextExam.subject.code : "No upcoming"}</div></div>
           <div className="stat-card stat-info"><div className="stat-icon"><Clock size={13} /></div><div className="stat-val">{schedLoading ? "…" : activeClass ? activeClass.start_time.slice(0, 5) : "—"}</div><div className="stat-label">{activeClass ? "Next class" : "Free now"}</div><div className="stat-sub">{activeClass ? activeClass.room : "No more today"}</div></div>
         </div>
-        <div className="dash-tabs">{(["schedule", "attendance", "exams"] as const).map(t => (<button key={t} className={`dash-tab ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>{t === "schedule" ? "Schedule" : t === "attendance" ? "Attendance" : "Exams"}</button>))}</div>
+        <div className="dash-tabs">{(["schedule", "attendance", "exams", "marks"] as const).map(t => (<button key={t} className={`dash-tab ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>{t === "schedule" ? "Schedule" : t === "attendance" ? "Attendance" : t === "exams" ? "Exams" : "Marks"}</button>))}</div>
         <div className="dash-body">
           {activeTab === "schedule" && (
             <div className="sched-wrap">
@@ -348,6 +345,9 @@ function DashboardPanel({ onClose, onAsk, student }: {
               <button className="dash-ask-btn" onClick={() => onAsk("Create a study schedule for my upcoming midsem exams")}>Help me make a study plan →</button>
             </div>
           )}
+          {activeTab === "marks" && (
+            <MarksPanel studentId={student.id} compact={true} />
+          )}
         </div>
       </aside>
     </>
@@ -402,14 +402,15 @@ function useStreamingChat() {
 }
 
 // ─── Full Dashboard ───────────────────────────────────────────────────────────
-function FullDashboard({ student, onClose, onAsk }: { student: typeof STUDENT_FALLBACK; onClose: () => void; onAsk: (q: string) => void; }) {
+function FullDashboard({ student, onClose, onAsk }: { student: any; onClose: () => void; onAsk: (q: string) => void; }) {
   const [attDetail,     setAttDetail]     = useState<AttendanceWithSubject | null>(null);
   const [timetableDay,  setTimetableDay]  = useState<string | null>(null);
   const [timetableSlots, setTimetableSlots] = useState<any[]>([]);
 
-  const { data: attendance, loading: attLoading } = useStudentAttendance(student.id);
-  const { data: exams,      loading: exLoading  } = useStudentExams(student.id);
-  const { data: schedule                        } = useStudentSchedule(student.id);
+  const _email = student.email || (typeof window !== "undefined" ? sessionStorage.getItem("cc_email") || "" : "");
+  const { data: attendance, loading: attLoading } = useLiveAttendance(student.id, _email);
+  const { data: exams,      loading: exLoading  } = useLiveExams(student.id);
+  const { data: schedule,   loading: schedLoading } = useLiveSchedule(student.id);
 
   const byDay: Record<string, any[]> = {};
   (schedule || []).forEach((s: any) => { if (!byDay[s.day]) byDay[s.day] = []; byDay[s.day].push(s); });
@@ -559,6 +560,12 @@ function FullDashboard({ student, onClose, onAsk }: { student: typeof STUDENT_FA
             })}
           </div>
         </div>
+        
+        {/* NEW: Marks & Grades Section */}
+        <div className="fd-section">
+          <div className="fd-section-title">Marks & Grades</div>
+          <MarksPanel studentId={student.id} compact={false} />
+        </div>
       </div>
     </div>
   );
@@ -577,32 +584,28 @@ export default function ChatPage() {
   const [deletingId,      setDeletingId]      = useState<string | null>(null);
   const [paletteOpen,     setPaletteOpen]     = useState(false);
   const [streamingMsgId,  setStreamingMsgId]  = useState<string | null>(null);
-  const [STUDENT,         setStudent]         = useState(STUDENT_FALLBACK);
-  const [authReady,       setAuthReady]       = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef       = useRef<HTMLInputElement>(null);
-  const userIdRef      = useRef<string>("");
-  const { sendMessage } = useStreamingChat();
 
   // Agent State
   const { logs, running, result, runAgent, clearLogs, cancel } = useAgentStream();
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
 
-  // Live data for context injection into AI
-  const { data: attendance } = useStudentAttendance(STUDENT.id);
-  const { data: exams }      = useStudentExams(STUDENT.id);
+  // ── REAL AUTH + PROFILE ───────────────────────────────────────────────────
+  const { student: STUDENT, authReady, syncing: profileSyncing } = useStudentSession();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef       = useRef<HTMLInputElement>(null);
+  const userIdRef      = useRef<string>("");
+  const { sendMessage } = useStreamingChat();
 
+  // Keep userIdRef in sync with real student id
   useEffect(() => {
-    const email = sessionStorage.getItem("cc_email");
-    const role  = sessionStorage.getItem("cc_role");
-    const name  = sessionStorage.getItem("cc_name") || "";
-    if (!email || !role) { router.replace("/login"); return; }
-    if (role === "faculty") { router.replace("/teacher"); return; }
-    const id = email.split("@")[0];
-    userIdRef.current = id;
-    setStudent({ ...STUDENT_FALLBACK, id, name, initials: name.split(" ").filter(Boolean).map((n: string) => n[0]).slice(0, 2).join("").toUpperCase() });
-    setAuthReady(true);
-  }, [router]);
+    if (STUDENT.id) userIdRef.current = STUDENT.id;
+  }, [STUDENT.id]);
+
+  // ── REAL LIVE DATA ────────────────────────────────────────────────────────
+  const studentEmail = STUDENT.email || (typeof window !== "undefined" ? sessionStorage.getItem("cc_email") || "" : "");
+  const { data: attendance, syncing: attSyncing } = useLiveAttendance(STUDENT.id, studentEmail);
+  const { data: exams }                           = useLiveExams(STUDENT.id);
+  const { data: marks } = useStudentMarks(STUDENT.id);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); setPaletteOpen(p => !p); } if (e.key === "Escape") setPaletteOpen(false); };
@@ -677,10 +680,40 @@ export default function ChatPage() {
     setStreamingMsgId(streamId);
     
     const history = messages.slice(-6).map(m => ({ role: m.role, content: m.content }));
-    const contextData = {
-      attendance: (attendance || []).map(a => ({ subject: a.subject.code, percentage: Math.round(a.percentage), attended: a.attended, total: a.total })),
-      upcoming_exams: (exams || []).map(e => ({ subject: e.subject.code, name: e.subject.name, days_left: e.days_left, date: e.exam_date })),
+    
+    // Build base context from live hooks
+    const baseContext = {
+      attendance: (attendance || []).map(a => ({
+        subject:    (a.subject || a as any)?.code || "",
+        name:       (a.subject || a as any)?.name || "",
+        percentage: Math.round(a.percentage || 0),
+        attended:   a.attended || 0,
+        total:      a.total    || 0,
+        status:     (a.percentage >= 75) ? "safe" : (a.percentage >= 65) ? "risk" : "detained",
+      })),
+      upcoming_exams: (exams || []).map(e => ({
+        subject:  (e.subject || e as any)?.code || "",
+        name:     (e.subject || e as any)?.name || "",
+        days_left: e.days_left || 0,
+        date:     e.exam_date || "",
+      })),
+      marks: (marks || []).map(m => ({
+        subject:    m.subject?.code || "",
+        exam_type:  m.exam_type,
+        score:      m.score,
+        max_score:  m.max_score || 100,
+        percentage: Math.round((m.score / (m.max_score || 100)) * 100),
+        grade:      m.grade,
+      })),
     };
+
+    // Enrich with real DB / agent data based on intent
+    const { contextData } = await enrichContext(
+      userContent,
+      STUDENT.id,
+      studentEmail,
+      baseContext,
+    );
 
     await sendMessage(
       userContent, STUDENT.id, history, contextData,
@@ -920,8 +953,8 @@ export default function ChatPage() {
           </div>
           <div className="sb-footer">
             <div className="sb-user-row" onClick={() => setCurrentView("settings")}>
-              <div className="sb-avatar">{STUDENT.initials}</div>
-              <div style={{ flex: 1, minWidth: 0 }}><div className="sb-uname">{STUDENT.name}</div><div className="sb-usub">{STUDENT.id}</div></div>
+              <div className="sb-avatar">{STUDENT?.initials}</div>
+              <div style={{ flex: 1, minWidth: 0 }}><div className="sb-uname">{STUDENT?.name}</div><div className="sb-usub">{STUDENT?.id}</div></div>
               <Settings size={13} style={{ color: "rgba(255,255,255,0.25)", flexShrink: 0 }} />
             </div>
           </div>
@@ -935,18 +968,21 @@ export default function ChatPage() {
           <div className="settings-inner">
             <div className="settings-section"><h2>Account</h2>
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div><label style={{ fontSize: 13, color: "#fff", fontWeight: 500, display: "block", marginBottom: 6 }}>Name</label><input className="setting-input" value={STUDENT.name} readOnly style={{ width: "100%" }} /></div>
-                <div><label style={{ fontSize: 13, color: "#fff", fontWeight: 500, display: "block", marginBottom: 6 }}>Student ID</label><input className="setting-input" value={STUDENT.id} readOnly style={{ width: "100%" }} /></div>
+                <div><label style={{ fontSize: 13, color: "#fff", fontWeight: 500, display: "block", marginBottom: 6 }}>Name</label><input className="setting-input" value={STUDENT?.name || ""} readOnly style={{ width: "100%" }} /></div>
+                <div><label style={{ fontSize: 13, color: "#fff", fontWeight: 500, display: "block", marginBottom: 6 }}>Student ID</label><input className="setting-input" value={STUDENT?.id || ""} readOnly style={{ width: "100%" }} /></div>
               </div>
             </div>
             <div className="settings-section"><h2>Data</h2>
               <div className="danger-zone">
-                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)" }}>Delete all chat history for {STUDENT.id}.</p>
+                <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)" }}>Delete all chat history for {STUDENT?.id}.</p>
                 <button className="danger-btn" onClick={deleteAllChats}><Trash2 size={13} /> Delete All Data</button>
               </div>
             </div>
             <div className="settings-section"><h2>Sign Out</h2>
-              <button style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.12)", padding: "10px 18px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontFamily: "'Outfit',sans-serif" }} onClick={() => { sessionStorage.clear(); router.replace("/login"); }}>
+              <button style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.04)", color: "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.12)", padding: "10px 18px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontFamily: "'Outfit',sans-serif" }} onClick={() => {
+                try { sessionStorage.clear(); } catch {}
+                router.replace("/login");
+              }}>
                 Sign out
               </button>
             </div>
@@ -954,7 +990,8 @@ export default function ChatPage() {
         </div>
       ) : (
         <main className="main">
-          
+          <SyncBanner email={STUDENT.email} />
+
           {/* Floating Agent Panel */}
           {agentPanelOpen && (
             <AgentActivityFloat
@@ -974,6 +1011,8 @@ export default function ChatPage() {
               {!isSidebarOpen && <span style={{ fontFamily: "'Syne',sans-serif", fontSize: 14, fontWeight: 700, color: "rgba(255,255,255,0.5)", letterSpacing: "-0.01em" }}>Campus<span style={{ color: "#7c3aed" }}>Copilot</span></span>}
             </div>
             <div className="topbar-right">
+            <SyncIndicator email={STUDENT.email} />
+
               <button
                 onClick={() => setAgentPanelOpen(p => !p)}
                 style={{
@@ -988,7 +1027,13 @@ export default function ChatPage() {
                 <Zap size={12} /> Agent {running ? "●" : "○"}
               </button>
               {/* Live notification bell */}
-              <NotificationBell userId={STUDENT.id} />
+              <NotificationBell userId={STUDENT?.id || ""} />
+              {(profileSyncing || attSyncing) && (
+                <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:11, color:"rgba(255,255,255,0.35)", padding:"4px 8px" }}>
+                  <div style={{ width:8, height:8, border:"1.5px solid rgba(124,58,237,0.4)", borderTopColor:"#7c3aed", borderRadius:"50%", animation:"spin 0.7s linear infinite" }}/>
+                  Syncing…
+                </div>
+              )}
               <button className={`dash-toggle ${currentView === "dashboard" ? "on" : "off"}`} onClick={() => setCurrentView(v => v === "dashboard" ? "chat" : "dashboard")}>
                 <LayoutGrid size={14} /> Dashboard
               </button>
@@ -1000,7 +1045,7 @@ export default function ChatPage() {
               <FullDashboard student={STUDENT} onClose={() => setCurrentView("chat")} onAsk={handleSend} />
             ) : isChatEmpty ? (
               <div className="empty-state" style={{ flex: 1 }}>
-                <div className="empty-greeting">Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, {STUDENT.name.split(" ")[0]} 👋</div>
+                <div className="empty-greeting">Good {new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, {STUDENT?.name?.split(" ")[0]} 👋</div>
                 <p className="empty-sub">What do you need help with today?</p>
                 <div className="prompt-grid">
                   {QUICK_PROMPTS.map((p, i) => (

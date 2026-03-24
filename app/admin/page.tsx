@@ -15,6 +15,8 @@ import {
   HardDrive, Edit, ExternalLink, Download, Filter, Eye, ToggleLeft,
   ToggleRight, Info, Mail, User,
 } from "lucide-react";
+import { SubjectManagementView } from "@/components/admin/SubjectManagementView";
+
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { getSession, clearSession } from "@/lib/auth";
@@ -1073,16 +1075,12 @@ export default function AdminPage() {
             {view === "workflows"    && <WorkflowsView />}
             {view === "integrations" && <IntegrationsView />}
             {view === "settings"     && <SettingsView />}
-            {view === "subjects"     && (
-              <div>
-                <PageHeader title="Subject Management" sub="Create subjects, assign faculty, and configure enrollments" />
-                <div style={{ padding:"40px", textAlign:"center", background:"var(--bg1)", border:"1px solid var(--border)", borderRadius:10, color:"rgba(255,255,255,.25)" }}>
-                  <BookOpen size={28} style={{marginBottom:10,opacity:.3}}/><br/>
-                  Subject CRUD — connect to existing subjects table from teacher dashboard
-                </div>
-              </div>
-            )}
-            {view === "lab" && (
+            {view === "subjects" && (
+  <div>
+    <PageHeader title="Subject Management" sub="Create subjects, assign faculty, enroll students" />
+    <SubjectManagementView />
+  </div>
+)}            {view === "lab" && (
               <div>
                 <PageHeader title="Lab Requests (Global)" sub="All requests across the college — admin override enabled" />
                 <div style={{ padding:"40px", textAlign:"center", background:"var(--bg1)", border:"1px solid var(--border)", borderRadius:10, color:"rgba(255,255,255,.25)" }}>
