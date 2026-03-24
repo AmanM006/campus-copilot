@@ -1,279 +1,319 @@
 "use client";
-import React, { useState } from "react";
-import { ArrowLeft, ArrowRight, AlertCircle } from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-
+// app/login/page.tsx — OTP login, all redirect bugs fixed (Frontend Direct)
 // ─────────────────────────────────────────────────────────────────────────────
-// AUTHORISED ACCOUNTS — add/remove emails here for the prototype
-// Role is auto-detected from domain:
-//   @learner.manipal.edu  →  student  →  /chat
-//   @manipal.edu          →  faculty  →  /teacher
-// ─────────────────────────────────────────────────────────────────────────────
-const ACCOUNTS: Record<string, { name: string; password: string }> = {
-  // ── Students ──────────────────────────────────────────────────────────────
-  "240957160@learner.manipal.edu":  { name: "Aman Mishra",          password: "demo" },
-  "213cs1001@learner.manipal.edu":  { name: "Aman Mehta",           password: "demo" },
-  "213cs1002@learner.manipal.edu":  { name: "Priya Nair",           password: "demo" },
 
-  // ── Faculty ───────────────────────────────────────────────────────────────
-  "kkp.prakash@manipal.edu":        { name: "Krishna Prakasha K",   password: "demo" },
-  "priya.sharma@manipal.edu":       { name: "Dr. Priya Sharma",     password: "demo" },
-};
+import React, { useState, useEffect, useRef, Suspense } from "react";
+import { Mail, ShieldCheck, ArrowRight, AlertCircle, CheckCircle } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 
-function detectRole(email: string): "student" | "faculty" | null {
-  const domain = email.split("@")[1]?.toLowerCase();
-  if (domain === "learner.manipal.edu") return "student";
-  if (domain === "manipal.edu")         return "faculty";
-  return null;
+type Step = "email" | "otp" | "done";
+
+function dashFor(role: string) {
+  if (role === "admin")   return "/admin";
+  if (role === "faculty") return "/teacher";
+  return "/chat";
 }
 
-export default function LoginPage() {
-  const router   = useRouter();
-  const [email,    setEmail]    = useState("");
-  const [password, setPassword] = useState("");
-  const [error,    setError]    = useState("");
-  const [loading,  setLoading]  = useState(false);
+function LoginContent() {
+  const [step,  setStep]  = useState<Step>("email");
+  const [email, setEmail] = useState("");
+  const [otp,   setOtp]   = useState("");
+  const [error, setError] = useState("");
+  const [info,  setInfo]  = useState("");
+  const [busy,  setBusy]  = useState(false);
+  const going = useRef(false);   // prevent double redirect
 
-  const attemptLogin = (rawEmail: string, rawPassword: string) => {
-    setError("");
-    const e = rawEmail.trim().toLowerCase();
-    const account = ACCOUNTS[e];
+  // If sessionStorage already has a session, go straight to dashboard
+  useEffect(() => {
+    try {
+      const e = sessionStorage.getItem("cc_email");
+      const r = sessionStorage.getItem("cc_role");
+      if (e && r && !going.current) {
+        going.current = true;
+        window.location.replace(dashFor(r));
+      }
+    } catch { /* SSR or private mode */ }
+  }, []);
 
-    if (!account) {
-      setError("Email not recognised. Contact your administrator.");
-      return;
+  // ── Send OTP ───────────────────────────────────────────────────────────────
+  const sendOtp = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const addr = email.trim().toLowerCase();
+    if (!addr.includes("@")) { setError("Enter a valid email address."); return; }
+
+    setError(""); setInfo(""); setBusy(true);
+
+    try {
+      // 1. Check allow-list — only admin-added emails can log in
+      const { data: row, error: dbErr } = await supabase
+        .from("users")
+        .select("id, email, name, role")
+        .ilike("email", addr)
+        .maybeSingle();
+
+      if (dbErr) throw new Error(dbErr.message);
+
+      if (!row) {
+        setError(
+          `"${addr}" is not registered.\n\n` +
+          `Ask your college admin to add you in\nAdmin → User Registry.`
+        );
+        return;
+      }
+
+      // 2. Send OTP via Supabase Auth
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email: addr,
+        options: {
+          shouldCreateUser: true,   // creates auth.users entry for bulk-imported users
+        },
+      });
+
+      if (otpErr) throw new Error(otpErr.message);
+
+      setInfo(`Code sent to ${addr}. Check your inbox and spam folder.`);
+      setStep("otp");
+
+    } catch (err: any) {
+      setError(err.message || "Something went wrong. Try again.");
+    } finally {
+      setBusy(false);
     }
-    if (account.password !== rawPassword) {
-      setError("Incorrect password.");
-      return;
-    }
-    const role = detectRole(e);
-    if (!role) {
-      setError("Email domain not supported.");
-      return;
-    }
-
-    setLoading(true);
-    // Store session (replace with real JWT/session cookie in production)
-    sessionStorage.setItem("cc_email", e);
-    sessionStorage.setItem("cc_name",  account.name);
-    sessionStorage.setItem("cc_role",  role);
-
-    setTimeout(() => {
-      router.push(role === "faculty" ? "/teacher" : "/chat");
-    }, 800);
   };
 
-  const handleSubmit = (ev: React.FormEvent) => {
-    ev.preventDefault();
-    attemptLogin(email, password);
-  };
+  // ── Verify OTP ─────────────────────────────────────────────────────────────
+  const verifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const token = otp.trim();
+    const addr  = email.trim().toLowerCase();
 
-  // Simulated Microsoft SSO — in production wire up MSAL.js here
-  // The token from Azure AD will contain user.mail which we compare against ACCOUNTS
-  const handleMicrosoftSSO = () => {
-    const mockEmail = window.prompt("🔵 Microsoft SSO (prototype)\n\nEnter your Manipal email:");
-    if (!mockEmail) return;
-    attemptLogin(mockEmail, "demo"); // SSO skips password check in real flow
+    if (token.length < 6) { setError("Enter the full code."); return; }
+    if (going.current) return;
+
+    setError(""); setBusy(true);
+
+    try {
+      // verifyOtp with type:"email"
+      const { data, error: vErr } = await supabase.auth.verifyOtp({
+        email: addr,
+        token,
+        type:  "email",
+      });
+
+      // If Supabase returns an error the code is wrong/expired
+      if (vErr) {
+        setError(`Incorrect or expired code.\n${vErr.message}`);
+        setBusy(false);
+        return;
+      }
+
+      // ── Verification succeeded ──────────────────────────────────────────
+      // Force sync the secure session to the local browser immediately
+      if (data?.session) {
+        await supabase.auth.setSession({
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token
+        });
+      }
+
+      // Fetch profile from public.users (not auth.users — we want our data)
+      const { data: row } = await supabase
+        .from("users")
+        .select("id, name, role, email")
+        .ilike("email", addr)
+        .maybeSingle();
+
+      const role = row?.role || "student";
+      const name = row?.name || addr.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+      const id   = row?.id   || addr.split("@")[0].replace(/[^a-z0-9_-]/gi, "_");
+
+      // Write to sessionStorage
+      try {
+        sessionStorage.setItem("cc_email", addr);
+        sessionStorage.setItem("cc_name",  name);
+        sessionStorage.setItem("cc_role",  role);
+        sessionStorage.setItem("cc_id",    id);
+      } catch { /* private mode */ }
+
+      going.current = true;
+      setStep("done");
+
+      // Tiny timeout ensures the browser completes writing the secure token to cookies/localStorage
+      // before we trigger the hard page navigation.
+      setTimeout(() => {
+        window.location.href = dashFor(role);
+      }, 400);
+
+    } catch (err: any) {
+      setError(err.message || "Verification failed. Try again.");
+      setBusy(false);
+    }
   };
 
   return (
     <div style={{
-      fontFamily: "'DM Sans', sans-serif", height: "100vh", width: "100vw",
-      overflow: "hidden", position: "relative", display: "flex",
-      flexDirection: "column", color: "#fff",
+      minHeight: "100vh",
+      background: "#000",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+      fontFamily: "'DM Sans', system-ui, sans-serif",
+      color: "#fff",
     }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&display=swap');
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        ::selection { background: #7c3aed; color: #fff; }
-
-        .login-bg {
-          position: absolute; inset: 0; z-index: 0; background: #000;
-        }
-        .login-bg::before {
-          content: ''; position: absolute; inset: 0;
-          background: radial-gradient(ellipse 100% 100% at 50% -20%, rgba(109,40,217,0.4) 0%, rgba(10,10,10,1) 60%);
-          pointer-events: none;
-        }
-
-        .login-container {
-          position: relative; z-index: 10; flex: 1;
-          display: flex; flex-direction: column;
-          align-items: center; justify-content: center;
-          padding: 40px 20px;
-        }
-        .login-content { width: 100%; max-width: 420px; }
-
-        .login-headline {
-          font-size: clamp(42px, 6vw, 68px);
-          font-weight: 500; letter-spacing: -0.04em;
-          line-height: 0.95; margin-bottom: 14px; color: #fff;
-        }
-        .login-sub {
-          color: rgba(255,255,255,0.45); font-size: 15px;
-          line-height: 1.6; margin-bottom: 40px;
-        }
-
-        .pill-input {
-          width: 100%; height: 54px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 100px;
-          padding: 0 24px; color: #fff; font-size: 15px;
-          font-family: 'DM Sans', sans-serif;
-          transition: all 0.25s; outline: none; margin-bottom: 12px; display: block;
-        }
-        .pill-input:focus {
-          border-color: #7c3aed;
-          background: rgba(124,58,237,0.06);
-          box-shadow: 0 0 0 3px rgba(124,58,237,0.12);
-        }
-        .pill-input::placeholder { color: rgba(255,255,255,0.28); }
-
-        .pill-btn-primary {
-          width: 100%; height: 54px;
-          background: #fff; color: #000;
-          border: none; border-radius: 100px;
-          font-size: 13px; font-weight: 700;
-          letter-spacing: 0.06em; text-transform: uppercase;
-          cursor: pointer; display: flex;
-          align-items: center; justify-content: center; gap: 8px;
-          transition: all 0.25s; margin-top: 4px;
-        }
-        .pill-btn-primary:hover:not(:disabled) {
-          transform: translateY(-2px);
-          box-shadow: 0 8px 24px rgba(255,255,255,0.12);
-        }
-        .pill-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .pill-btn-ms {
-          width: 100%; height: 54px;
-          background: rgba(255,255,255,0.04); color: #fff;
-          border: 1px solid rgba(255,255,255,0.1); border-radius: 100px;
-          font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif;
-          cursor: pointer; display: flex; align-items: center;
-          justify-content: center; gap: 11px; transition: all 0.25s;
-          margin-bottom: 28px;
-        }
-        .pill-btn-ms:hover {
-          background: rgba(255,255,255,0.08);
-          border-color: rgba(255,255,255,0.2);
-        }
-
-        .divider {
-          display: flex; align-items: center; color: rgba(255,255,255,0.2);
-          font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
-          margin: 28px 0;
-        }
-        .divider::before, .divider::after {
-          content: ''; flex: 1;
-          border-bottom: 1px solid rgba(255,255,255,0.07);
-        }
-        .divider::before { margin-right: 12px; }
-        .divider::after  { margin-left:  12px; }
-
-        .error-box {
-          display: flex; align-items: center; gap: 9px;
-          background: rgba(239,68,68,0.08);
-          border: 1px solid rgba(239,68,68,0.22);
-          border-radius: 12px; padding: 11px 16px;
-          font-size: 13px; color: #fca5a5; margin-bottom: 14px;
-          animation: err-in 0.2s ease;
-        }
-        @keyframes err-in { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
-
-        .role-hint {
-          margin-top: 28px; text-align: center;
-          font-size: 11px; color: rgba(255,255,255,0.18);
-          font-family: 'DM Mono', monospace; letter-spacing: 0.08em;
-          line-height: 1.8;
-        }
-        .role-dot-student { color: #a78bfa; }
-        .role-dot-faculty { color: #60a5fa; }
-
-        .loader {
-          width: 17px; height: 17px;
-          border: 2px solid rgba(0,0,0,0.15);
-          border-bottom-color: #000; border-radius: 50%;
-          animation: spin 0.8s linear infinite; display: inline-block;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        .glow{position:fixed;inset:0;background:radial-gradient(ellipse 140% 70% at 50% -5%,rgba(47,128,237,0.18),#000 55%);pointer-events:none}
+        .card{position:relative;z-index:1;width:100%;max-width:400px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.09);border-radius:20px;padding:36px 30px}
+        .field{width:100%;height:52px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:0 14px;color:#fff;font-size:15px;font-family:'DM Sans',sans-serif;outline:none;transition:border-color .2s,box-shadow .2s}
+        .field:focus{border-color:rgba(47,128,237,0.6);box-shadow:0 0 0 3px rgba(47,128,237,0.08)}
+        .field::placeholder{color:rgba(255,255,255,0.2)}
+        .otp-field{text-align:center;font-size:30px;font-weight:700;letter-spacing:0.3em;font-family:'DM Mono',monospace;height:64px;padding:0 8px}
+        .btn{width:100%;height:50px;background:#2f80ed;border:none;border-radius:10px;color:#fff;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s;font-family:'DM Sans',sans-serif}
+        .btn:hover:not(:disabled){background:#1d6cd9;transform:translateY(-1px);box-shadow:0 4px 16px rgba(47,128,237,0.3)}
+        .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+        .ghost{background:transparent;border:none;color:rgba(255,255,255,0.35);font-size:12px;cursor:pointer;text-decoration:underline;font-family:'DM Sans',sans-serif;padding:0}
+        .ghost:hover{color:rgba(255,255,255,0.65)}
+        .err{display:flex;gap:8px;background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:11px 14px;font-size:12px;color:#fca5a5;margin-bottom:14px;white-space:pre-wrap;line-height:1.7;align-items:flex-start}
+        .inf{display:flex;gap:8px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:11px 14px;font-size:12px;color:#4ade80;margin-bottom:14px;align-items:flex-start}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+        @keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .up{animation:up .22s ease}
       `}</style>
 
-      <div className="login-bg" />
+      <div className="glow" />
+      <div className="card up">
 
-      {/* Back nav */}
-      <nav style={{ position:"absolute", top:0, left:0, right:0, zIndex:100, padding:"28px 36px" }}>
-        <Link href="/" style={{
-          display:"flex", alignItems:"center", gap:7,
-          fontSize:11, fontWeight:700, textTransform:"uppercase",
-          letterSpacing:"0.06em", color:"rgba(255,255,255,0.4)",
-          width:"max-content", textDecoration:"none", transition:"color 0.2s",
-        }}
-          onMouseOver={e => (e.currentTarget.style.color="#fff")}
-          onMouseOut={e  => (e.currentTarget.style.color="rgba(255,255,255,0.4)")}>
-          <ArrowLeft size={13}/> Return
-        </Link>
-      </nav>
+        {/* ── Header ── */}
+        <div style={{ textAlign:"center", marginBottom:26 }}>
+          <div style={{ fontSize:12, fontWeight:700, letterSpacing:".08em", textTransform:"uppercase", color:"rgba(255,255,255,0.3)", marginBottom:10 }}>
+            Campus<span style={{ color:"#2f80ed" }}>Copilot</span>
+          </div>
 
-      <div className="login-container">
-        <div className="login-content">
+          {step === "email" && <>
+            <div style={{ fontSize:25, fontWeight:600, letterSpacing:"-0.02em" }}>Sign in</div>
+            <div style={{ fontSize:13, color:"rgba(255,255,255,0.4)", marginTop:6, lineHeight:1.65 }}>
+              Enter your institutional email —<br/>we'll send a one-time sign-in code.
+            </div>
+          </>}
 
-          <h1 className="login-headline">Sign in to<br/>Copilot.</h1>
-          <p className="login-sub">Your unified campus intelligence platform.</p>
+          {step === "otp" && <>
+            <div style={{ fontSize:25, fontWeight:600, letterSpacing:"-0.02em" }}>Check your email</div>
+            <div style={{ fontSize:13, color:"rgba(255,255,255,0.4)", marginTop:6, lineHeight:1.65 }}>
+              Code sent to<br/>
+              <span style={{ fontFamily:"'DM Mono',monospace", fontSize:12, color:"rgba(255,255,255,0.7)" }}>{email}</span>
+            </div>
+          </>}
 
-          {/* Microsoft SSO */}
-          <button className="pill-btn-ms" onClick={handleMicrosoftSSO}>
-            <svg width="18" height="18" viewBox="0 0 21 21" fill="none">
-              <rect x="1"  y="1"  width="9" height="9" fill="#F25022"/>
-              <rect x="11" y="1"  width="9" height="9" fill="#7FBA00"/>
-              <rect x="1"  y="11" width="9" height="9" fill="#00A4EF"/>
-              <rect x="11" y="11" width="9" height="9" fill="#FFB900"/>
-            </svg>
-            Continue with Microsoft
-          </button>
-
-          <div className="divider">or sign in with email</div>
-
-          {/* Error */}
-          {error && (
-            <div className="error-box">
-              <AlertCircle size={15} style={{ flexShrink:0 }}/>
-              {error}
+          {step === "done" && (
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:12, padding:"8px 0" }}>
+              <CheckCircle size={40} color="#10b981" strokeWidth={1.5} />
+              <div style={{ fontSize:20, fontWeight:600, color:"#4ade80" }}>Signed in!</div>
+              <div style={{ fontSize:13, color:"rgba(255,255,255,0.4)" }}>Taking you to your dashboard…</div>
             </div>
           )}
+        </div>
 
-          {/* Email + password form */}
-          <form onSubmit={handleSubmit}>
-            <input
-              id="email-input"
-              type="email"
-              placeholder="Manipal email address"
-              className="pill-input"
-              value={email}
-              onChange={e => { setEmail(e.target.value); setError(""); }}
-              required
-              autoComplete="email"
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              className="pill-input"
-              value={password}
-              onChange={e => { setPassword(e.target.value); setError(""); }}
-              required
-              autoComplete="current-password"
-            />
-            <button type="submit" className="pill-btn-primary" disabled={loading}>
-              {loading ? <span className="loader"/> : <> Sign In <ArrowRight size={15}/> </>}
+        {/* ── Error / Info banners ── */}
+        {error && (
+          <div className="err">
+            <AlertCircle size={14} style={{ marginTop:2, flexShrink:0 }} />
+            <span>{error}</span>
+          </div>
+        )}
+        {info && !error && (
+          <div className="inf">
+            <CheckCircle size={14} style={{ marginTop:2, flexShrink:0 }} />
+            <span>{info}</span>
+          </div>
+        )}
+
+        {/* ── Email form ── */}
+        {step === "email" && (
+          <form onSubmit={sendOtp} style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            <div style={{ position:"relative" }}>
+              <Mail size={14} color="rgba(255,255,255,0.22)" style={{
+                position:"absolute", left:14, top:"50%", transform:"translateY(-50%)", pointerEvents:"none",
+              }}/>
+              <input
+                type="email"
+                className="field"
+                placeholder="you@yourcollege.edu"
+                value={email}
+                autoComplete="email"
+                autoFocus
+                onChange={e => { setEmail(e.target.value); setError(""); }}
+                style={{ paddingLeft:40 }}
+              />
+            </div>
+            <button className="btn" type="submit" disabled={busy || !email.includes("@")}>
+              {busy ? <span className="spin"/> : <><ShieldCheck size={14}/> Send Code</>}
             </button>
           </form>
+        )}
 
+        {/* ── OTP form ── */}
+        {step === "otp" && (
+          <form onSubmit={verifyOtp} style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <input
+              type="text"
+              inputMode="numeric"
+              className="field otp-field"
+              placeholder="00000000"
+              maxLength={8}
+              value={otp}
+              autoFocus
+              onChange={e => { setOtp(e.target.value.replace(/\D/g, "").slice(0, 8)); setError(""); }}
+            />
+            <button className="btn" type="submit" disabled={busy || otp.length < 6}>
+              {busy ? <span className="spin"/> : <><ArrowRight size={14}/> Verify & Sign In</>}
+            </button>
+            <div style={{ display:"flex", justifyContent:"space-between" }}>
+              <button type="button" className="ghost"
+                onClick={() => { setStep("email"); setOtp(""); setError(""); setInfo(""); }}>
+                ← Change email
+              </button>
+              <button type="button" className="ghost" disabled={busy}
+                onClick={() => { setOtp(""); setError(""); setInfo(""); sendOtp(); }}>
+                Resend code
+              </button>
+            </div>
+          </form>
+        )}
 
-        </div>
+        {/* ── Footer ── */}
+        {step !== "done" && (
+          <div style={{
+            marginTop:22, padding:"11px 13px",
+            background:"rgba(255,255,255,0.02)",
+            border:"1px solid rgba(255,255,255,0.05)",
+            borderRadius:10,
+            fontFamily:"'DM Mono',monospace",
+            fontSize:10, lineHeight:2,
+            color:"rgba(255,255,255,0.22)",
+          }}>
+            <div>@learner.manipal.edu → Student → /chat</div>
+            <div>@manipal.edu         → Faculty → /teacher</div>
+            <div style={{ fontFamily:"'DM Sans',sans-serif", fontSize:11, marginTop:5, color:"rgba(255,255,255,0.18)" }}>
+              Only admin-added emails can sign in.{" "}
+              <a href="/onboarding" style={{ color:"#2f80ed", textDecoration:"none" }}>
+                Set up your college →
+              </a>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div style={{ height:"100vh", background:"#000" }}/>}>
+      <LoginContent/>
+    </Suspense>
   );
 }

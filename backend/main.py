@@ -1,4 +1,5 @@
-import os, json, datetime, asyncio
+import os, json, datetime, asyncio, logging
+import datetime as _dt
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -8,16 +9,28 @@ from dotenv import load_dotenv, find_dotenv
 from openai import OpenAI
 from pinecone import Pinecone
 from tools import get_lab_tools
+from attendance_pipeline import get_attendance_for_user
 
 load_dotenv(find_dotenv())
+
+# 👉 1. Import your new agent router
+from agent_routes import agent_router
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("main")
+
 github_token = os.getenv("GITHUB_TOKEN")
 pinecone_key = os.getenv("PINECONE_API_KEY")
 if not github_token: raise ValueError("GITHUB_TOKEN missing")
 if not pinecone_key: raise ValueError("PINECONE_API_KEY missing")
 
 app = FastAPI()
+
+# 👉 2. Mount the agent routes to your main app!
+app.include_router(agent_router)
+
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"],
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+                   allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 client = OpenAI(base_url="https://models.inference.ai.azure.com", api_key=github_token)
 pc     = Pinecone(api_key=pinecone_key)
@@ -29,21 +42,7 @@ class ChatRequest(BaseModel):
     history: Optional[List[Dict[str, str]]] = []
     role:    Optional[str] = "student"
 
-# ─── Campus Data ───────────────────────────────────────────────────────────────
-MOCK_ATTENDANCE = [
-    {"code":"MAT 2201","name":"Probability and Optimization",           "attended":38,"total":45,"percent":84},
-    {"code":"CSS 2201","name":"Database Systems",                        "attended":29,"total":42,"percent":69},
-    {"code":"CSS 2202","name":"Design & Analysis of Algorithms",         "attended":40,"total":44,"percent":91},
-    {"code":"CSS 2203","name":"Introduction to Artificial Intelligence", "attended":31,"total":43,"percent":72},
-    {"code":"CSS 2204","name":"Operating Systems",                       "attended":22,"total":24,"percent":92},
-]
-MOCK_GRADES = {"cgpa":8.4,"semester_gpa":8.7,"subjects":[
-    {"code":"MAT 2201","name":"Probability and Optimization",           "grade":"A", "points":9, "marks":78},
-    {"code":"CSS 2201","name":"Database Systems",                        "grade":"B+","points":8, "marks":71},
-    {"code":"CSS 2202","name":"Design & Analysis of Algorithms",         "grade":"A+","points":10,"marks":91},
-    {"code":"CSS 2203","name":"Introduction to Artificial Intelligence", "grade":"B", "points":7, "marks":65},
-    {"code":"CSS 2204","name":"Operating Systems",                       "grade":"A", "points":9, "marks":82},
-]}
+# ─── Campus Data (Mocks retained for features not yet scraped) ─────────────────
 MOCK_EXAM_SCHEDULE = [
     {"code":"MAT 2201","subject":"Probability and Optimization",           "date":"2026-03-06","time":"8:30–10:00 AM","hall":"ELH-1"},
     {"code":"CSS 2201","subject":"Database Systems",                        "date":"2026-03-07","time":"8:30–10:00 AM","hall":"ELH-2"},
@@ -51,15 +50,6 @@ MOCK_EXAM_SCHEDULE = [
     {"code":"CSS 2203","subject":"Introduction to Artificial Intelligence", "date":"2026-03-10","time":"8:30–10:00 AM","hall":"LH-301"},
     {"code":"CSS 2204","subject":"Operating Systems",                       "date":"2026-03-11","time":"8:30–10:00 AM","hall":"LH-302"},
 ]
-MOCK_TIMETABLE = {
-    "Monday":   [{"time":"08:00–09:00","subject":"Probability & Optimization","room":"LH-301","type":"lecture"},{"time":"09:00–10:00","subject":"Database Systems","room":"LH-204","type":"lecture"},{"time":"10:15–11:15","subject":"Design & Analysis of Algo","room":"LH-102","type":"lecture"},{"time":"11:30–13:30","subject":"OS Lab","room":"OSDL-B","type":"lab"},{"time":"14:30–15:30","subject":"Operating Systems","room":"LH-301","type":"lecture"}],
-    "Tuesday":  [{"time":"08:00–09:00","subject":"Intro to AI","room":"LH-205","type":"lecture"},{"time":"09:00–10:00","subject":"Operating Systems","room":"LH-301","type":"lecture"},{"time":"11:00–13:00","subject":"DBMS Lab","room":"LAB-4","type":"lab"},{"time":"14:00–15:00","subject":"Probability & Optimization","room":"LH-102","type":"lecture"}],
-    "Wednesday":[{"time":"08:00–09:00","subject":"Database Systems","room":"LH-204","type":"lecture"},{"time":"09:15–10:15","subject":"Design & Analysis of Algo","room":"LH-102","type":"lecture"},{"time":"10:30–11:30","subject":"Intro to AI","room":"LH-205","type":"lecture"},{"time":"14:00–15:00","subject":"Operating Systems","room":"LH-301","type":"lecture"}],
-    "Thursday": [{"time":"08:00–09:00","subject":"Probability & Optimization","room":"LH-301","type":"lecture"},{"time":"10:00–12:00","subject":"Algorithms Lab","room":"CC-3","type":"lab"},{"time":"13:00–14:00","subject":"Database Systems","room":"LH-204","type":"lecture"},{"time":"14:00–15:00","subject":"Intro to AI","room":"LH-205","type":"lecture"}],
-    "Friday":   [{"time":"08:00–09:00","subject":"Design & Analysis of Algo","room":"LH-102","type":"lecture"},{"time":"09:00–10:00","subject":"Operating Systems","room":"LH-301","type":"lecture"},{"time":"10:15–11:15","subject":"Intro to AI","room":"LH-205","type":"lecture"}],
-    "Saturday": [{"time":"08:00–09:00","subject":"Database Systems","room":"LH-204","type":"lecture"},{"time":"09:00–10:00","subject":"Probability & Optimization","room":"LH-102","type":"lecture"}],
-    "Sunday":   [],
-}
 MOCK_FEES = {"total_outstanding":97000,"dues":[
     {"category":"Tuition","amount":85000,"due_date":"2026-03-31","status":"Pending"},
     {"category":"Hostel", "amount":12000,"due_date":"2026-03-15","status":"Overdue"},
@@ -75,9 +65,6 @@ MOCK_LAB  = {
 MOCK_NOTICES = [
     {"id":1,"title":"IV Sem Midsem Exam Timetable Released","category":"exam","date":"2026-03-05","detail":"All exams 6–11 March, 8:30–10:00 AM."},
     {"id":2,"title":"Lab Safety Workshop – March 12, CC-4","category":"academic","date":"2026-03-04","detail":"Mandatory for 4th sem students."},
-    {"id":3,"title":"Placement Drive: TCS – March 18","category":"placement","date":"2026-03-03","detail":"Eligible: CGPA ≥ 7.0, no backlogs. Register by March 14."},
-    {"id":4,"title":"Hostel Maintenance – Block C, March 15–16","category":"hostel","date":"2026-03-02","detail":"Hot water unavailable."},
-    {"id":5,"title":"Sports Day Registration Open","category":"event","date":"2026-03-01","detail":"Register at Sports Office before March 10."},
 ]
 MOCK_MESS = {
     "Monday":   {"breakfast":"Idli, Sambar, Chutney, Boiled Eggs","lunch":"Rice, Dal Tadka, Paneer Butter Masala, Roti, Salad","dinner":"Chapati, Veg Curry, Curd Rice, Pickle"},
@@ -88,6 +75,31 @@ MOCK_MESS = {
     "Saturday": {"breakfast":"Bread Toast, Omelette, Tea","lunch":"Fried Rice, Manchurian, Soup","dinner":"Roti, Mixed Dal, Aloo Fry, Curd"},
     "Sunday":   {"breakfast":"Pongal, Vada, Sambhar, Tea","lunch":"Special Thali — Rice, Sambar, Rasam, Papad, Sweet","dinner":"Chapati, Paneer, Dal, Rice, Ice Cream"},
 }
+
+# ─── Shared cache reader ──────────────────────────────────────────────────────
+async def _get_cached(user_email: str, data_type: str):
+    """
+    Fetch one row from cached_data for (user_email, type).
+    Returns the parsed Python object, or None if not found.
+    """
+    try:
+        from supabase import create_client
+        sb = create_client(
+            os.getenv("SUPABASE_URL", ""),
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_ANON_KEY", "")),
+        )
+        result = sb.table("cached_data") \
+            .select("data, updated_at") \
+            .eq("user_email", user_email) \
+            .eq("type", data_type) \
+            .maybe_single() \
+            .execute()
+        if result.data and result.data.get("data"):
+            raw = result.data["data"]
+            return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as e:
+        logger.warning(f"[_get_cached] {data_type} for {user_email}: {e}")
+    return None
 
 # ─── Tool Executors ────────────────────────────────────────────────────────────
 def exec_book(a,uid):
@@ -111,24 +123,135 @@ def exec_avail(a):
 
 def exec_cancel(a,uid): return {"booking_id":a.get("booking_id","BK-LAST"),"status":"cancelled"}
 
-def exec_att(a,uid):
-    code=a.get("subject_code")
-    recs=[r for r in MOCK_ATTENDANCE if not code or r["code"]==code]
-    enr=[{**r,
-          "can_bunk":max(0,int((r["attended"]-0.75*r["total"])/0.75)) if r["percent"]>=75 else 0,
-          "need_to_attend":max(0,int((0.75*r["total"]-r["attended"])/0.25)+1) if r["percent"]<75 else 0,
-          "safe":r["percent"]>=75} for r in recs]
-    return {"student":"Aman Mehta","semester":4,"records":enr}
+async def exec_att(a, uid, user_email: str = ""):
+    if not user_email:
+        raise RuntimeError("Cannot fetch attendance — your email is not available. Please sign out and sign back in.")
+    
+    logger.info(f"[exec_att] Fetching attendance for {user_email}")
+    records = await get_attendance_for_user(user_email)
+    
+    if not records:
+        raise RuntimeError(
+            "I'm fetching your fresh attendance data right now. "
+            "A secure portal window has opened — please log in there, "
+            "wait a few seconds for the sync to complete, then ask me again!"
+        )
+    
+    code = a.get("subject_code")
+    if code:
+        records = [r for r in records if r.get("code", "").upper() == code.upper()]
+    return {"records": records}
 
-def exec_grades(a,uid): return {"student":"Aman Mehta",**MOCK_GRADES}
+async def exec_grades(a, uid, user_email: str = ""):
+    if not user_email:
+        raise RuntimeError("Email not available — please sign in again.")
+    data = await _get_cached(user_email, "academics")
+    if not data:
+        raise RuntimeError(
+            "I'm fetching your academics data right now. "
+            "A portal window will open — please log in, wait a moment, then ask again."
+        )
+    return data
+
 def exec_exams(a,uid): return {"student":"Aman Mehta","type":"IV Sem Midterm","time":"8:30 AM – 10:00 AM","exams":MOCK_EXAM_SCHEDULE}
 
-def exec_tt(a,uid):
-    day=a.get("day","today")
-    if day=="today": day=datetime.datetime.now().strftime("%A")
-    elif day=="tomorrow": day=(datetime.datetime.now()+datetime.timedelta(days=1)).strftime("%A")
-    day=day.capitalize()
-    return {"student":"Aman Mehta","day":day,"classes":MOCK_TIMETABLE.get(day,[])}
+async def exec_tt(a, uid, user_email: str = ""):
+    if not user_email:
+        raise RuntimeError("Email not available — please sign in again.")
+
+    day_param = a.get("day", "today").lower()
+    if day_param == "today":
+        target_day = _dt.datetime.now().strftime("%A")
+    elif day_param == "tomorrow":
+        target_day = (_dt.datetime.now() + _dt.timedelta(days=1)).strftime("%A")
+    else:
+        target_day = day_param.capitalize()
+
+    # Try DB schedule table first (populated by teacher import)
+    try:
+        from supabase import create_client
+        sb = create_client(
+            os.getenv("SUPABASE_URL", ""),
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_ANON_KEY", "")),
+        )
+        user_res = sb.table("users").select("id").eq("email", user_email).maybe_single().execute()
+        student_id = user_res.data["id"] if user_res.data else None
+
+        if student_id:
+            enrolled = sb.table("subject_enrollments").select("subject_id").eq("student_id", student_id).execute()
+            ids = [e["subject_id"] for e in (enrolled.data or [])]
+            if ids:
+                slots = sb.table("schedule") \
+                    .select("day, start_time, end_time, room, type, subjects(name,code)") \
+                    .in_("subject_id", ids) \
+                    .eq("day", target_day) \
+                    .order("start_time") \
+                    .execute()
+                if slots.data:
+                    return {"day": target_day, "classes": [
+                        {
+                            "time":    f"{s['start_time'][:5]}–{s['end_time'][:5]}",
+                            "subject": s["subjects"]["name"] if s.get("subjects") else "—",
+                            "room":    s.get("room", "—"),
+                            "type":    s.get("type", "lecture"),
+                        }
+                        for s in slots.data
+                    ]}
+    except Exception as e:
+        logger.warning(f"[exec_tt] DB schedule failed: {e}")
+
+    # Fallback: cached_data from portal scraper
+    data = await _get_cached(user_email, "schedule")
+    if not data:
+        raise RuntimeError(
+            "Your timetable isn't synced yet. "
+            "Please wait for the portal sync to complete and ask again."
+        )
+
+    classes = [
+        s for s in (data if isinstance(data, list) else [])
+        if str(s.get("day", "")).lower() == target_day.lower()
+        or str(s.get("date", "")).lower() == target_day.lower()
+    ]
+    return {"day": target_day, "classes": classes}
+
+async def exec_profile(a, uid, user_email: str = ""):
+    if not user_email:
+        raise RuntimeError("Email not available — please sign in again.")
+    data = await _get_cached(user_email, "profile")
+    if not data:
+        raise RuntimeError("Your profile isn't synced yet. Please wait a moment and ask again.")
+    return data
+
+async def exec_bunk(a, uid, user_email: str = ""):
+    from attendance_pipeline import get_attendance_for_user
+    records = await get_attendance_for_user(user_email)
+    if not records:
+        raise RuntimeError("Attendance not synced yet — please log into the portal and ask again.")
+    code = a.get("subject_code")
+    if code:
+        records = [r for r in records if r.get("code", "").upper() == code.upper()]
+
+    enriched = []
+    for r in records:
+        att = r.get("attended", 0)
+        tot = r.get("total", 0)
+        safe_miss = max(0, int((att - 0.75 * (tot + 0)) / 0.75))
+        needed    = max(0, _classes_to_75(att, tot))
+        enriched.append({**r, "can_miss": safe_miss, "classes_needed": needed})
+    return {"records": enriched}
+
+def _classes_to_75(attended: int, total: int) -> int:
+    if total == 0: return 0
+    if attended / total >= 0.75: return 0
+    x = 0
+    while (attended + x) / (total + x) < 0.75:
+        x += 1
+        if x > 200: break
+    return x
+
+async def exec_marks(a, uid, user_email: str = ""):
+    return await exec_grades(a, uid, user_email)
 
 def exec_fees(a,uid): return {"student":"Aman Mehta",**MOCK_FEES}
 
@@ -155,55 +278,112 @@ def exec_notices(a):
 
 # ─── Dispatcher ────────────────────────────────────────────────────────────────
 DISPATCH = {
-    "book_lab_slot":                  {"fn":exec_book,    "nu":True, "at":"tool_interaction",   "r":lambda a:f"Here's the lab access request for **{a.get('lab_name')}**:"},
-    "check_lab_availability":         {"fn":exec_avail,   "nu":False,"at":"lab_availability",   "r":lambda a:f"Here's the availability for **{a.get('lab_name')}**:"},
-    "cancel_lab_booking":             {"fn":exec_cancel,  "nu":True, "at":"cancel_booking",     "r":lambda a:"Your lab request has been cancelled."},
-    "get_attendance":                 {"fn":exec_att,     "nu":True, "at":"attendance_report",  "r":lambda a:"Here's your attendance this semester:"},
-    "get_attendance_bunk_calculator": {"fn":exec_att,     "nu":True, "at":"attendance_report",  "r":lambda a:"Here's your attendance breakdown:"},
-    "get_grades":                     {"fn":exec_grades,  "nu":True, "at":"grades_report",      "r":lambda a:"Here are your grades:"},
-    "get_exam_schedule":              {"fn":exec_exams,   "nu":True, "at":"exam_schedule",      "r":lambda a:"Here's your IV Sem Midterm schedule:"},
-    "get_timetable":                  {"fn":exec_tt,      "nu":True, "at":"timetable",          "r":lambda a:f"Here's your schedule for **{a.get('day','today')}**:"},
-    "get_fee_status":                 {"fn":exec_fees,    "nu":True, "at":"fee_status",         "r":lambda a:"Here's your current fee status:"},
-    "raise_grievance":                {"fn":exec_griev,   "nu":True, "at":"grievance_submitted","r":lambda a:f"Your complaint has been submitted under **{a.get('category')}**:"},
-    "request_bonafide_certificate":   {"fn":exec_doc,     "nu":True, "at":"document_request",   "r":lambda a:f"Your **{a.get('document_type','document')}** request has been submitted:"},
-    "get_mess_menu":                  {"fn":exec_mess,    "nu":False,"at":"mess_menu",          "r":lambda a:f"Here's the mess menu for **{a.get('day','today')}**:"},
-    "get_campus_notices":             {"fn":exec_notices, "nu":False,"at":"campus_notices",     "r":lambda a:"Here are the latest campus notices:"},
+    "book_lab_slot":                  {"fn": exec_book,    "nu": True,  "at": "tool_interaction",    "r": lambda a: f"Here's the lab access request for **{a.get('lab_name')}**:"},
+    "check_lab_availability":         {"fn": exec_avail,   "nu": False, "at": "lab_availability",    "r": lambda a: f"Here's the availability for **{a.get('lab_name')}**:"},
+    "cancel_lab_booking":             {"fn": exec_cancel,  "nu": True,  "at": "cancel_booking",      "r": lambda a: "Your lab request has been cancelled."},
+    "get_attendance":                 {"fn": exec_att,     "nu": True,  "at": "attendance_report",   "r": lambda a: "Here's your attendance this semester:", "is_async": True},
+    "get_attendance_bunk_calculator": {"fn": exec_bunk,    "nu": True,  "at": "attendance_report",   "r": lambda a: "Here's your bunk analysis:", "is_async": True},
+    "get_grades":                     {"fn": exec_grades,  "nu": True,  "at": "grades_report",       "r": lambda a: "Here are your grades:", "is_async": True},
+    "get_exam_schedule":              {"fn": exec_exams,   "nu": True,  "at": "exam_schedule",       "r": lambda a: "Here's your IV Sem Midterm schedule:"},
+    "get_timetable":                  {"fn": exec_tt,      "nu": True,  "at": "timetable",           "r": lambda a: f"Here's your schedule for **{a.get('day', 'today')}**:", "is_async": True},
+    "get_fee_status":                 {"fn": exec_fees,    "nu": True,  "at": "fee_status",          "r": lambda a: "Here's your current fee status:"},
+    "raise_grievance":                {"fn": exec_griev,   "nu": True,  "at": "grievance_submitted", "r": lambda a: f"Your complaint has been submitted under **{a.get('category')}**:"},
+    "request_bonafide_certificate":   {"fn": exec_doc,     "nu": True,  "at": "document_request",    "r": lambda a: f"Your **{a.get('document_type', 'document')}** request has been submitted:"},
+    "get_mess_menu":                  {"fn": exec_mess,    "nu": False, "at": "mess_menu",           "r": lambda a: f"Here's the mess menu for **{a.get('day', 'today')}**:"},
+    "get_campus_notices":             {"fn": exec_notices, "nu": False, "at": "campus_notices",      "r": lambda a: "Here are the latest campus notices:"},
 }
 
 # ─── Format tool results as markdown ──────────────────────────────────────────
-def fmt(at,res,args):
-    if at=="attendance_report":
-        rows=res.get("records",[])
-        out="\n\n| Subject | Attended | Total | % | Status |\n|---|---|---|---|---|\n"
+def fmt(at, res, args):
+    if at == "attendance_report":
+        rows = res.get("records", [])
+        out  = "\n\n| Subject | Code | Attended | Total | % | Status |\n"
+        out += "|---|---|---|---|---|---|\n"
         for r in rows:
-            out+=f"| {r['name']} | {r['attended']} | {r['total']} | {r['percent']}% | {'✅ Safe' if r['safe'] else '⚠️ At risk'} |\n"
+            status    = "✅ Safe"   if r.get("safe") else "⚠️ At risk"
+            can_miss  = r.get("can_miss", "—")
+            needed    = r.get("classes_needed", "—")
+            pct_str   = f"{r.get('percent', 0):.1f}%"
+            out += (f"| {r.get('name','?')} | {r.get('code','')} "
+                    f"| {r.get('attended',0)} | {r.get('total',0)} "
+                    f"| {pct_str} | {status} |\n")
         return out
-    elif at=="grades_report":
-        out=f"\n\n**CGPA: {res['cgpa']}** | Semester GPA: {res['semester_gpa']}\n\n"
-        for s in res["subjects"]: out+=f"- **{s['code']}** {s['name']}: **{s['grade']}** ({s['marks']}/100)\n"
+
+    elif at == "grades_report":
+        cgpa  = res.get("cgpa")
+        gpa   = res.get("gpa")
+        tc    = res.get("total_credits")
+        ce    = res.get("credits_earned")
+
+        header = "\n\n"
+        if cgpa: header += f"**CGPA: {cgpa}**"
+        if gpa:  header += f"  |  Semester GPA: {gpa}"
+        if tc:   header += f"  |  Total Credits: {tc}"
+        if ce:   header += f"  |  Earned: {ce}"
+        header += "\n\n"
+
+        internal = res.get("internal_results", [])
+        if internal:
+            header += "### Internal Marks\n\n"
+            header += "| Code | Subject | Credits | Attendance | CA | MTA |\n"
+            header += "|---|---|---|---|---|---|\n"
+            for r in internal:
+                header += (f"| {r.get('code','')} | {r.get('name','')} "
+                           f"| {r.get('credits','')} | {r.get('attendance_pct','')}% "
+                           f"| {r.get('ca_marks','')} | {r.get('mta_marks','')} |\n")
+
+        final = res.get("final_results", [])
+        if final:
+            header += "\n### Final Grades\n\n"
+            header += "| Code | Subject | Internal Marks | Grade |\n"
+            header += "|---|---|---|---|\n"
+            for r in final:
+                header += (f"| {r.get('code','')} | {r.get('name','')} "
+                           f"| {r.get('internal_marks','')} | **{r.get('grade','')}** |\n")
+        return header
+
+    elif at == "timetable":
+        cl = res.get("classes", [])
+        if not cl:
+            return f"\n\nNo classes scheduled for **{res.get('day','today')}**."
+        out = f"\n\n**{res.get('day','Today')}'s Schedule**\n\n"
+        out += "| Time | Subject | Room | Type |\n|---|---|---|---|\n"
+        for c in cl:
+            out += (f"| {c.get('time','?')} | {c.get('subject','?')} "
+                    f"| {c.get('room','?')} | {c.get('type','lecture')} |\n")
         return out
-    elif at=="exam_schedule":
-        out="\n\n| Subject | Code | Date | Venue |\n|---|---|---|---|\n"
-        for e in res["exams"]: out+=f"| {e['subject']} | {e['code']} | {e['date']} | {e['hall']} |\n"
-        return out+f"\n_Timing: {res['time']}_"
-    elif at=="timetable":
-        cl=res.get("classes",[])
-        return "\n\nNo classes scheduled." if not cl else "\n\n"+"".join(f"- **{c['time']}** — {c['subject']} · {c['room']} _{c['type']}_\n" for c in cl)
-    elif at=="fee_status":
-        out=f"\n\n**Total outstanding: ₹{res['total_outstanding']:,}**\n\n"
-        for d in res["dues"]: out+=f"{'🔴' if d['status']=='Overdue' else '🟡' if d['status']=='Pending' else '✅'} **{d['category']}**: ₹{d['amount']:,} — {d['status']} (due {d['due_date']})\n"
+
+    elif at == "exam_schedule":
+        out  = "\n\n| Subject | Code | Date | Time | Hall |\n"
+        out += "|---|---|---|---|---|\n"
+        for e in res.get("exams", []):
+            out += (f"| {e.get('subject','?')} | {e.get('code','')} "
+                    f"| {e.get('date','')} | {e.get('time','')} | {e.get('hall','')} |\n")
+        return out + f"\n_Timing: {res.get('time','')}_ "
+
+    elif at == "fee_status":
+        out = f"\n\n**Total outstanding: ₹{res.get('total_outstanding', 0):,}**\n\n"
+        for d in res.get("dues", []):
+            icon = "🔴" if d["status"] == "Overdue" else "🟡" if d["status"] == "Pending" else "✅"
+            out += f"{icon} **{d['category']}**: ₹{d['amount']:,} — {d['status']} (due {d['due_date']})\n"
         return out
-    elif at=="mess_menu": return "\n\n"+"".join(f"**{m.capitalize()}**: {i}\n\n" for m,i in res.get("menu",{}).items())
-    elif at=="campus_notices": return "\n\n"+"".join(f"**{n['title']}** _{n['date']}_\n{n.get('detail','')}\n\n" for n in res.get("notices",[]))
-    elif at=="lab_availability": return "\n\n"+"".join(f"{'✅' if s=='Available' else '🔴'} **{sl.capitalize()}**: {s}\n" for sl,s in res.get("slots",{}).items())
-    elif at=="grievance_submitted": return f"\n\nTicket ID: **{res.get('ticket_id')}** · Expected response: {res.get('expected_response')}"
-    elif at=="document_request": return f"\n\nRequest ID: **{res.get('request_id')}** · Ready in: {res.get('ready_in')}"
+
+    elif at == "mess_menu":
+        return "\n\n" + "".join(f"**{m.capitalize()}**: {i}\n\n" for m, i in res.get("menu", {}).items())
+
+    elif at == "campus_notices":
+        return "\n\n" + "".join(f"**{n['title']}** _{n['date']}_\n{n.get('detail','')}\n\n" for n in res.get("notices", []))
+
+    elif at == "lab_availability":
+        return "\n\n" + "".join(f"{'✅' if s == 'Available' else '🔴'} **{sl.capitalize()}**: {s}\n" for sl, s in res.get("slots", {}).items())
+        
+    elif at == "grievance_submitted": return f"\n\nTicket ID: **{res.get('ticket_id')}** · Expected response: {res.get('expected_response')}"
+    elif at == "document_request": return f"\n\nRequest ID: **{res.get('request_id')}** · Ready in: {res.get('ready_in')}"
     return ""
 
 def sse(event,data): return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 def build_system(role, context):
-    # Always inject today's real date so the model can answer date questions
     today = datetime.datetime.now().strftime("%A, %d %B %Y")
     if role=="faculty":
         return f"""You are Campus Copilot, an AI assistant for faculty at Manipal Institute of Technology.
@@ -226,7 +406,6 @@ async def chat_stream(req: ChatRequest):
     async def generate() -> AsyncGenerator[str,None]:
         full_text = ""
         try:
-            # Step 1: RAG search
             yield sse("rag_start", {})
             await asyncio.sleep(0)
             emb     = client.embeddings.create(input=req.message, model="text-embedding-3-small")
@@ -236,12 +415,10 @@ async def chat_stream(req: ChatRequest):
                 if "metadata" in m and "text" in m["metadata"] and m.get("score",0) > 0.5:
                     context += m["metadata"]["text"]+"\n\n"
                     sources.append({"text":m["metadata"]["text"][:150]+"…","score":round(m.get("score",0),3)})
-            # Only send sources if they're actually relevant (score > 0.3)
             if sources:
                 yield sse("rag", {"sources": sources})
             await asyncio.sleep(0)
 
-            # Step 2: Build messages
             sys_prompt = build_system(req.role, context)
             messages   = [{"role":"system","content":sys_prompt}]
             for m in req.history:
@@ -249,8 +426,6 @@ async def chat_stream(req: ChatRequest):
                     messages.append({"role":m["role"],"content":m["content"]})
             messages.append({"role":"user","content":req.message})
 
-            # Step 3: Single LLM call with tools (no separate probe)
-            # Use a non-streaming call first to detect tool use, then stream if no tool
             ck = {}
             if req.role != "faculty":
                 ck["tools"]       = get_lab_tools()
@@ -264,7 +439,6 @@ async def chat_stream(req: ChatRequest):
             tool_calls = getattr(msg_obj, "tool_calls", None)
 
             if tool_calls:
-                # Tool path — execute and stream the formatted reply
                 tc        = tool_calls[0]
                 tool_name = tc.function.name
                 args      = json.loads(tc.function.arguments)
@@ -274,17 +448,29 @@ async def chat_stream(req: ChatRequest):
                 if not d:
                     yield sse("error",{"message":"Unknown tool called."}); return
 
-                result      = d["fn"](args, req.user_id) if d["nu"] else d["fn"](args)
+                try:
+                    if d.get("is_async"):
+                        user_email = req.user_id if "@" in req.user_id else f"{req.user_id}@learner.manipal.edu"
+                        result = await d["fn"](args, req.user_id, user_email)
+                    elif d.get("nu"):
+                        result = d["fn"](args, req.user_id)
+                    else:
+                        result = d["fn"](args)
+                except RuntimeError as e:
+                    err_msg = str(e)
+                    logger.warning(f"[tool] {tool_name} failed: {err_msg}")
+                    yield sse("token", {"text": f"⚠️ {err_msg}"})
+                    yield sse("done",  {"full_text": f"⚠️ {err_msg}"})
+                    return
+
                 action_type = d["at"]
                 reply_text  = d["r"](args) + fmt(action_type, result, args)
 
-                # Stream the reply character by character for visual effect
                 for char in reply_text:
                     yield sse("token",{"text":char})
                     full_text += char
                     await asyncio.sleep(0.002)
 
-                # Send the action card data
                 yield sse("action",{
                     "type":      action_type,
                     "tool_name": tool_name,
@@ -293,7 +479,6 @@ async def chat_stream(req: ChatRequest):
                 })
 
             elif msg_obj.content:
-                # Plain answer path — the model already answered, stream it token by token
                 for char in msg_obj.content:
                     yield sse("token",{"text":char})
                     full_text += char
@@ -333,7 +518,19 @@ async def chat_endpoint(req: ChatRequest):
             tc=tcs[0]; tname=tc.function.name; args=json.loads(tc.function.arguments)
             d=DISPATCH.get(tname)
             if not d: return {"reply":msg.content or "Unknown tool.","action":None}
-            result=d["fn"](args,req.user_id) if d["nu"] else d["fn"](args); at=d["at"]
+            
+            try:
+                if d.get("is_async"):
+                    user_email = req.user_id if "@" in req.user_id else f"{req.user_id}@learner.manipal.edu"
+                    result = await d["fn"](args, req.user_id, user_email)
+                elif d.get("nu"):
+                    result = d["fn"](args, req.user_id)
+                else:
+                    result = d["fn"](args)
+            except RuntimeError as e:
+                return {"reply": f"⚠️ {str(e)}", "action": None}
+                
+            at=d["at"]
             return {"reply":d["r"](args)+fmt(at,result,args),
                     "action":{"type":at,"tool_name":tname,"status":"Pending Confirmation" if at=="tool_interaction" else "Success","details":{**args,**result}}}
         return {"reply":msg.content,"action":None}

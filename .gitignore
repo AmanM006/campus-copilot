@@ -4,10 +4,13 @@
 
 # Next.js / Node
 node_modules/
+backend/sessions/
 .next/
 out/
+backend/.env
 build/
-
+server/sessions/
+server/node_modules
 # Python
 __pycache__/
 *.pyc
