@@ -39,17 +39,53 @@ export async function assignTeacherToSubject(subjectId: string, teacherId: strin
 }
 
 /** Enroll students in a subject */
+/** Enroll students in a subject */
 export async function enrollStudents(subjectId: string, studentIds: string[]) {
   if (!studentIds.length) return 0;
   const rows = studentIds.map(id => ({ student_id: id, subject_id: subjectId }));
+
   const { error, count } = await supabase
     .from("enrollments")
-    .upsert(rows, { onConflict: "student_id,subject_id" })
-    .select("*", { count: "exact" });
+    .upsert(rows, { 
+      onConflict: "student_id,subject_id",
+      count: "exact"  // <--- Move count here
+    })
+    .select("*");     // <--- Remove the object from here
+
   if (error) throw error;
   return count || 0;
 }
 
+/** Robust CSV Parsing for Marks */
+export function parseMarksCSV(text: string) {
+  const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+  const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
+
+  const getIdx = (name: string) => {
+    const idx = headers.indexOf(name);
+    if (idx === -1) throw new Error(`Missing required CSV column: ${name}`);
+    return idx;
+  };
+
+  try {
+    const sId = getIdx("student_id");
+    const subId = getIdx("subject_id");
+    const scoreId = getIdx("score");
+
+    return lines.slice(1).map(line => {
+      const c = line.split(",").map(x => x.trim());
+      return {
+        student_id: c[sId],
+        subject_id: c[subId],
+        score: parseFloat(c[scoreId]) || 0,
+        max_score: parseFloat(c[headers.indexOf("max_score")]) || 100,
+        exam_type: c[headers.indexOf("exam_type")] || "midsem",
+      };
+    }).filter(r => r.student_id);
+  } catch (e: any) {
+    throw new Error(e.message);
+  }
+}
 /** Remove a student from a subject */
 export async function unenrollStudent(subjectId: string, studentId: string) {
   const { error } = await supabase
@@ -61,24 +97,29 @@ export async function unenrollStudent(subjectId: string, studentId: string) {
 }
 
 /** Get all subjects with teacher + student count — Admin view */
+/** Get all subjects with teacher + student count — Admin view */
 export async function getAllSubjectsAdmin() {
   const { data, error } = await supabase
     .from("subjects")
     .select(`
-      *, professor:users!professor_id(id, name, email),
-      enrollments(count), documents(count)
-    `)
+      *,
+      professor:users!professor_id(id, name, email),
+      enrollments(count),
+      documents(count)
+    `) // Remove the second argument here entirely if it exists
     .order("code");
+
   if (error) throw error;
+  
   return (data || []).map((s: any) => ({
     ...s,
     teacher_name:   s.professor?.name  || "—",
     teacher_email:  s.professor?.email || "",
-    student_count:  s.enrollments?.[0]?.count || 0,
-    document_count: s.documents?.[0]?.count   || 0,
+    // Note: Supabase returns count as an array of objects or a single object depending on version
+    student_count:  s.enrollments?.[0]?.count ?? s.enrollments?.count ?? 0,
+    document_count: s.documents?.[0]?.count ?? s.documents?.count ?? 0,
   }));
 }
-
 /** Get students enrolled in a subject (for teacher view) */
 export async function getStudentsInSubject(subjectId: string) {
   const { data, error } = await supabase
@@ -293,22 +334,3 @@ export function parseAttendanceCSV(text: string): { student_id:string; subject_i
 }
 
 /** Parse marks CSV: student_id,subject_id,score,max_score,exam_type */
-export function parseMarksCSV(text: string): { student_id:string; subject_id:string; score:number; max_score:number; exam_type:string }[] {
-  const lines   = text.trim().split(/\r?\n/).filter(l => l.trim());
-  const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
-
-  const col = (name: string) => headers.indexOf(name);
-
-  return lines.slice(1)
-    .map(line => {
-      const c = line.split(",").map(x => x.trim());
-      return {
-        student_id: c[col("student_id")] || "",
-        subject_id: c[col("subject_id")] || "",
-        score:      parseFloat(c[col("score")]) || 0,
-        max_score:  parseFloat(c[col("max_score")]) || 100,
-        exam_type:  c[col("exam_type")] || "midsem",
-      };
-    })
-    .filter(r => r.student_id);
-}
