@@ -139,7 +139,10 @@ app.post("/api/otp/verify", async (req, res) => {
 // Body: { email, portalUrl? }
 // SSE: streams setup logs
 app.post("/api/get-or-create-session", async (req, res) => {
-  let { email, portalUrl, forceNew } = req.body;
+  let email = req.body.email || req.query.email;
+  let portalUrl = req.body.portalUrl || req.query.portalUrl;
+  let forceNew = req.body.forceNew || req.query.forceNew;
+
   if (!email) email = "admin_setup@campuscopilot.local";
   const { emit, done } = sseSetup(res);
 

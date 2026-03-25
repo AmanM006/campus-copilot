@@ -7,6 +7,7 @@ node_modules/
 backend/sessions/
 .next/
 out/
+teams-bot/node_modules
 backend/.env
 build/
 server/sessions/

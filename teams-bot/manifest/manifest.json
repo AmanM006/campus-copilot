@@ -1,0 +1,53 @@
+{
+    "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.16",
+    "version": "1.0.0",
+    "id": "YOUR-BOT-APP-ID-HERE",
+    "packageName": "edu.manipal.campuscopilot",
+    "developer": {
+      "name":          "Manipal Institute of Technology",
+      "websiteUrl":    "https://manipal.edu",
+      "privacyUrl":    "https://manipal.edu/privacy",
+      "termsOfUseUrl": "https://manipal.edu/terms"
+    },
+    "name": {
+      "short": "CampusCopilot",
+      "full":  "CampusCopilot — MIT Student Assistant"
+    },
+    "description": {
+      "short": "Your MIT campus AI assistant",
+      "full":  "CampusCopilot answers questions about your attendance, timetable, exams, grades, lab bookings, fees, and campus notices — directly inside Teams."
+    },
+    "icons": {
+      "color":   "icon-color.png",
+      "outline": "icon-outline.png"
+    },
+    "accentColor": "#7c3aed",
+    "bots": [
+      {
+        "botId":               "YOUR-BOT-APP-ID-HERE",
+        "scopes":              ["personal"],
+        "isNotificationOnly":  false,
+        "supportsCalling":     false,
+        "supportsVideo":       false,
+        "supportsFiles":       false,
+        "commandLists": [
+          {
+            "scopes":   ["personal"],
+            "commands": [
+              { "title": "help",       "description": "Show what I can do" },
+              { "title": "attendance", "description": "Check your attendance" },
+              { "title": "timetable",  "description": "Today's class schedule" },
+              { "title": "exams",      "description": "Upcoming exam schedule" },
+              { "title": "grades",     "description": "Your current grades" },
+              { "title": "fees",       "description": "Fee status and dues" },
+              { "title": "mess menu",  "description": "Today's mess menu" },
+              { "title": "notices",    "description": "Latest campus notices" }
+            ]
+          }
+        ]
+      }
+    ],
+    "permissions": ["identity", "messageTeamMembers"],
+    "validDomains": []
+  }
