@@ -14,7 +14,8 @@ if not github_token:
     raise ValueError("GITHUB_TOKEN missing in .env")
 client = AsyncOpenAI(
     base_url="https://models.inference.ai.azure.com",
-    api_key="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" # 🚨 Force the fresh token here!
+    api_key=os.environ.get("GITHUB_TOKEN")
+ # 🚨 Force the fresh token here!
 )
 # The master log of EVERYTHING the admin does
 raw_events = []
