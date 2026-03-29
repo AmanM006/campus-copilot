@@ -32,7 +32,8 @@ app.include_router(agent_router)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"],
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-client = OpenAI(base_url="https://models.inference.ai.azure.com", api_key=github_token)
+client = OpenAI(base_url="https://models.inference.ai.azure.com", 
+api_key=os.environ.get("GITHUB_TOKEN"))
 pc     = Pinecone(api_key=pinecone_key)
 index  = pc.Index("campus-copilot")
 
@@ -450,7 +451,9 @@ async def chat_stream(req: ChatRequest):
 
                 try:
                     if d.get("is_async"):
-                        user_email = req.user_id if "@" in req.user_id else f"{req.user_id}@learner.manipal.edu"
+                        raw_email = req.user_id if "@" in req.user_id else f"{req.user_id}@learner.manipal.edu"
+                        # Convert aman8_mitmpl to aman8.mitmpl
+                        user_email = raw_email.replace("_mitmpl", ".mitmpl").replace("_work", ".work")
                         result = await d["fn"](args, req.user_id, user_email)
                     elif d.get("nu"):
                         result = d["fn"](args, req.user_id)
@@ -521,7 +524,8 @@ async def chat_endpoint(req: ChatRequest):
             
             try:
                 if d.get("is_async"):
-                    user_email = req.user_id if "@" in req.user_id else f"{req.user_id}@learner.manipal.edu"
+                    raw_email = req.user_id if "@" in req.user_id else f"{req.user_id}@learner.manipal.edu"
+                    user_email = raw_email.replace("_mitmpl", ".mitmpl").replace("_work", ".work") 
                     result = await d["fn"](args, req.user_id, user_email)
                 elif d.get("nu"):
                     result = d["fn"](args, req.user_id)

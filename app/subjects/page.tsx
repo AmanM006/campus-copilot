@@ -6,9 +6,13 @@ import Link from "next/link";
 
 export default function Page() {
   const [id, setId] = useState("");
+  const [email, setEmail] = useState("");
   
   useEffect(() => {
-    try { setId(sessionStorage.getItem("cc_id") || ""); } catch {}
+    try {
+      setId(sessionStorage.getItem("cc_id") || "");
+      setEmail(sessionStorage.getItem("cc_email") || "");
+    } catch {}
   }, []);
 
   return (
@@ -21,7 +25,7 @@ export default function Page() {
       </div>
       
       {/* The actual subjects page */}
-      <SubjectsPage studentId={id} />
+      <SubjectsPage studentId={id} email={email} />
     </div>
   );
 }

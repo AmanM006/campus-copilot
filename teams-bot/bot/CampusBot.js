@@ -91,38 +91,30 @@ class CampusBot extends ActivityHandler {
       const history = await this.historyAccessor.get(context, []);
 
       // ── Call backend /api/chat ─────────────────────────────────────────────
-      const result = await _callBackend({
-        message: text,
-        user_id: email,
-        role:    verified.role || "student",
-        history: history.slice(-MAX_HISTORY_PAIRS * 2), // last N pairs
-      });
+// ── Call backend /api/chat ─────────────────────────────────────────────
+const result = await _callBackend({
+    message: text,
+    user_id: email,
+    role:    verified.role || "student",
+    history: history.slice(-MAX_HISTORY_PAIRS * 2), // last N pairs
+  });
 
-      // ── Handle sync-needed responses ────────────────────────────────────────
-      const needsSync = _isNotSyncedError(result.reply);
-      if (needsSync) {
-        // Trigger background sync and tell user
-        _triggerSync(email).catch(() => {});
-        await context.sendActivity(
-          "🔄 I'm syncing your portal data in the background. " +
-          "This usually takes 10–30 seconds. Please try again shortly!"
-        );
-        await next();
-        return;
-      }
+  // 🚨 FIX: We removed the aggressive auto-sync interceptor here!
+  // The bot now just acts as a pure messenger for whatever the AI decides to say.
 
-      // ── Send reply ──────────────────────────────────────────────────────────
-      const reply = result.reply || "I didn't get a response. Please try again.";
-      await context.sendActivity(MessageFactory.text(reply));
+  // ── Send reply ──────────────────────────────────────────────────────────
+  const reply = result.reply || "I didn't get a response. Please try again.";
+  await context.sendActivity(MessageFactory.text(reply));
 
-      // ── Append to history ───────────────────────────────────────────────────
-      history.push({ role: "user",      content: text  });
-      history.push({ role: "assistant", content: reply });
-      // Trim to MAX_HISTORY_PAIRS pairs
-      while (history.length > MAX_HISTORY_PAIRS * 2) history.shift();
-      await this.historyAccessor.set(context, history);
+  // ── Append to history ───────────────────────────────────────────────────
+  history.push({ role: "user",      content: text  });
+  history.push({ role: "assistant", content: reply });
+  
+  // Trim to MAX_HISTORY_PAIRS pairs
+  while (history.length > MAX_HISTORY_PAIRS * 2) history.shift();
+  await this.historyAccessor.set(context, history);
 
-      await next();
+  await next();
     });
 
     // ── Welcome message on install / first open ────────────────────────────────

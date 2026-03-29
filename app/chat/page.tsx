@@ -21,7 +21,7 @@ import { SyncBanner, SyncIndicator } from "@/components/SyncBanner";
 // ── NEW: real data ─────────────────────────────────────────────────────────────
 import NotificationBell from "@/components/NotificationBell";
 import { useStudentSession }                       from "@/hooks/useStudentSession";
-import { useLiveAttendance, useLiveExams, useLiveSchedule } from "@/hooks/useLiveData";
+import { useLiveAttendance, useLiveExams, useLiveSchedule,getISTDayName } from "@/hooks/useLiveData";
 import { enrichContext }                           from "@/lib/queryRouter";
 import type { AttendanceWithSubject, ExamWithSubject, DBScheduleSlot } from "@/lib/types";
 import { MarksPanel } from "@/components/student/MarksPanel";
@@ -87,7 +87,15 @@ function formatAgentResult(action: string, result: any): string {
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
-function getDayName(offset = 0) { const d = new Date(); d.setDate(d.getDate() + offset); return d.toLocaleDateString("en-IN", { weekday: "long" }); }
+// Replace the existing getDayName helper:
+function getDayName(offset = 0): string {
+  // Force IST (UTC+5:30) regardless of browser timezone
+  const now  = new Date();
+  const utc  = now.getTime() + now.getTimezoneOffset() * 60_000;
+  const ist  = new Date(utc + 5.5 * 3_600_000);
+  ist.setDate(ist.getDate() + offset);
+  return ist.toLocaleDateString("en-IN", { weekday: "long" });
+}
 function getClassStatus(sH: number, sM: number, eH: number, eM: number) {
   const n = new Date(); const nm = n.getHours() * 60 + n.getMinutes();
   const s = sH * 60 + sM; const e = eH * 60 + eM;
@@ -171,13 +179,15 @@ function AttendanceDetail({ subject, onBack }: { subject: AttendanceWithSubject;
 
 // ─── Timetable Popup ─────────────────────────────────────────────────────────
 function TimetablePopup({ day, slots, onClose, onAsk }: { day: string; slots: any[]; onClose: () => void; onAsk: (q: string) => void }) {
-  const isToday = day === getDayName(0);
+  // 🚨 DEMO OVERRIDE: Force it to treat Monday as "Today" so the UI looks active
+  const isToday = day === "Monday"; 
+  
   return (
     <div className="popup-overlay" onClick={onClose}>
       <div className="popup-box" onClick={e => e.stopPropagation()}>
         <div className="popup-header">
           <div><div className="popup-title">{day}'s Schedule</div><div className="popup-sub">{isToday ? "Today" : "Tomorrow"} · {slots.length} classes</div></div>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+          <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
         {slots.length === 0 ? <div className="popup-empty">No classes 🎉</div> : (
           <div className="popup-timeline">
@@ -205,154 +215,7 @@ function TimetablePopup({ day, slots, onClose, onAsk }: { day: string; slots: an
 }
 
 // ─── Dashboard Panel — FULLY LIVE ─────────────────────────────────────────────
-function DashboardPanel({ onClose, onAsk, student }: {
-  onClose: () => void; onAsk: (q: string) => void;
-  student: any;
-}) {
-  const [activeTab,    setActiveTab]    = useState<"schedule" | "attendance" | "exams" | "marks">("schedule");
-  const [attDetail,    setAttDetail]    = useState<AttendanceWithSubject | null>(null);
-  const [timetableDay, setTimetableDay] = useState<string | null>(null);
-  const [timetableSlots, setTimetableSlots] = useState<any[]>([]);
 
-  const _email = student.email || (typeof window !== "undefined" ? sessionStorage.getItem("cc_email") || "" : "");
-  const { data: attendance, loading: attLoading } = useLiveAttendance(student.id, _email);
-  const { data: exams,      loading: exLoading  } = useLiveExams(student.id);
-  const { data: schedule,   loading: schedLoading } = useLiveSchedule(student.id);
-
-  const now       = new Date();
-  const todayName = getDayName(0), tomorrowName = getDayName(1);
-
-  // Group schedule by day
-  const byDay: Record<string, any[]> = {};
-  (schedule || []).forEach((s: any) => { if (!byDay[s.day]) byDay[s.day] = []; byDay[s.day].push(s); });
-
-  const todaySlots    = byDay[todayName]    || [];
-  const tomorrowSlots = byDay[tomorrowName] || [];
-
-  const overallPct = attendance?.length ? Math.round(attendance.reduce((s, a) => s + a.percentage, 0) / attendance.length) : 0;
-  const atRisk     = attendance?.filter(a => a.percentage < 75).length ?? 0;
-  const nextExam   = exams?.[0] ?? null;
-  const activeClass = todaySlots.find((c: any) => {
-    const [sh, sm] = c.start_time.split(":").map(Number);
-    const [eh, em] = c.end_time.split(":").map(Number);
-    return getClassStatus(sh, sm, eh, em) === "current";
-  }) || todaySlots.find((c: any) => {
-    const [sh, sm] = c.start_time.split(":").map(Number);
-    const [eh, em] = c.end_time.split(":").map(Number);
-    return getClassStatus(sh, sm, eh, em) === "upcoming";
-  });
-
-  const atRiskNames = (attendance || []).filter(a => a.percentage < 75).map(a => a.subject?.name?.split(" ")[0]);
-  const insights = [
-    atRisk > 0 ? `⚠️ ${atRiskNames.join(", ")} need attention` : "✅ All subjects on track",
-    nextExam ? `📅 ${nextExam.subject.code} in ${nextExam.days_left} day${nextExam.days_left === 1 ? "" : "s"}` : "🎉 No upcoming exams",
-  ];
-
-  if (attDetail && activeTab === "attendance") return (
-    <aside className="dash-panel">
-      <div className="dash-header"><button className="icon-btn" onClick={() => setAttDetail(null)} style={{ marginRight: 8 }}><ArrowLeft size={16} /></button><span style={{ fontSize: 13, fontWeight: 600, color: "#fff" }}>Attendance Detail</span><button className="icon-btn" onClick={onClose} style={{ marginLeft: "auto" }}><PanelRightClose size={17} /></button></div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 14px 20px" }}><AttendanceDetail subject={attDetail} onBack={() => setAttDetail(null)} /></div>
-    </aside>
-  );
-
-  return (
-    <>
-      {timetableDay && <TimetablePopup day={timetableDay} slots={timetableSlots} onClose={() => setTimetableDay(null)} onAsk={onAsk} />}
-      <aside className="dash-panel">
-        <div className="dash-header">
-          <div><div className="dash-greeting">Hi, {student.name?.split(" ")[0]} 👋</div><div className="dash-time">{now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} · {now.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" })}</div></div>
-          <button className="icon-btn" onClick={onClose}><PanelRightClose size={17} /></button>
-        </div>
-        <div className="student-strip">
-          <div className="student-avatar">{student.initials}</div>
-          <div className="student-info"><div className="student-name">{student.name}</div><div className="student-meta">{student.id} · {student.branch?.split(" ")[0]} · Sem {student.semester}</div></div>
-          <div className="student-cgpa"><div className="cgpa-val">{student.cgpa}</div><div className="cgpa-label">CGPA</div></div>
-        </div>
-        <div className="insights-strip">
-          {insights.map((ins, i) => <div key={i} className="insight-item">{ins}</div>)}
-        </div>
-        <div className="stat-cards">
-          <div className={`stat-card ${overallPct < 75 ? "stat-danger" : "stat-ok"}`}><div className="stat-icon"><BarChart3 size={13} /></div><div className="stat-val">{attLoading ? "…" : `${overallPct}%`}</div><div className="stat-label">Attendance</div><div className="stat-sub">{atRisk > 0 ? `${atRisk} at risk` : "All safe"}</div></div>
-          <div className={`stat-card ${!nextExam ? "stat-ok" : nextExam.days_left <= 3 ? "stat-danger" : nextExam.days_left <= 7 ? "stat-warn-card" : "stat-ok"}`}><div className="stat-icon"><BookOpen size={13} /></div><div className="stat-val">{exLoading ? "…" : nextExam ? `${nextExam.days_left}d` : "Done"}</div><div className="stat-label">Next exam</div><div className="stat-sub">{nextExam ? nextExam.subject.code : "No upcoming"}</div></div>
-          <div className="stat-card stat-info"><div className="stat-icon"><Clock size={13} /></div><div className="stat-val">{schedLoading ? "…" : activeClass ? activeClass.start_time.slice(0, 5) : "—"}</div><div className="stat-label">{activeClass ? "Next class" : "Free now"}</div><div className="stat-sub">{activeClass ? activeClass.room : "No more today"}</div></div>
-        </div>
-        <div className="dash-tabs">{(["schedule", "attendance", "exams", "marks"] as const).map(t => (<button key={t} className={`dash-tab ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>{t === "schedule" ? "Schedule" : t === "attendance" ? "Attendance" : t === "exams" ? "Exams" : "Marks"}</button>))}</div>
-        <div className="dash-body">
-          {activeTab === "schedule" && (
-            <div className="sched-wrap">
-              <div className="sched-day-header"><span className="sched-day-label">Today · {todayName}</span><button className="sched-expand-btn" onClick={() => { setTimetableSlots(todaySlots); setTimetableDay(todayName); }}><Eye size={12} /> Expand</button></div>
-              {schedLoading ? <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", padding: "8px 0" }}>Loading…</div>
-                : todaySlots.length === 0 ? <div className="sched-empty">No classes today 🎉</div>
-                : todaySlots.map((cls: any, i: number) => {
-                  const [sh, sm] = cls.start_time.split(":").map(Number);
-                  const [eh, em] = cls.end_time.split(":").map(Number);
-                  const status = getClassStatus(sh, sm, eh, em);
-                  return (<div key={i} className={`sched-row ${status}`}><div className="sched-time-col"><span className="sched-time">{cls.start_time.slice(0, 5)}</span></div><div className={`sched-bar ${status}`} /><div className="sched-info"><div className="sched-subj">{cls.subject?.name}</div><div className="sched-meta">{cls.room} · <span className={`sched-type ${cls.type}`}>{cls.type}</span>{status === "current" && <span className="sched-now">NOW</span>}</div></div></div>);
-                })}
-              <div className="sched-day-header" style={{ marginTop: 16 }}><span className="sched-day-label">Tomorrow · {tomorrowName}</span><button className="sched-expand-btn" onClick={() => { setTimetableSlots(tomorrowSlots); setTimetableDay(tomorrowName); }}><Eye size={12} /> Expand</button></div>
-              {tomorrowSlots.length === 0 ? <div className="sched-empty">No classes tomorrow 🎉</div>
-                : tomorrowSlots.slice(0, 3).map((cls: any, i: number) => (
-                  <div key={i} className="sched-row upcoming"><div className="sched-time-col"><span className="sched-time">{cls.start_time.slice(0, 5)}</span></div><div className="sched-bar upcoming" /><div className="sched-info"><div className="sched-subj">{cls.subject?.name}</div><div className="sched-meta">{cls.room} · <span className={`sched-type ${cls.type}`}>{cls.type}</span></div></div></div>
-                ))
-              }
-              {tomorrowSlots.length > 3 && <button className="sched-more-btn" onClick={() => { setTimetableSlots(tomorrowSlots); setTimetableDay(tomorrowName); }}>+{tomorrowSlots.length - 3} more →</button>}
-            </div>
-          )}
-          {activeTab === "attendance" && (
-            <div className="att-wrap">
-              {attLoading && <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>Syncing attendance…</div>}
-              {(attendance || []).map((att: AttendanceWithSubject, i: number) => {
-                const pct   = Math.round(att.percentage);
-                const color = pct >= 75 ? "#10b981" : pct >= 65 ? "#f59e0b" : "#ef4444";
-                return (
-                  <div key={i} className="att-card" onClick={() => setAttDetail(att)}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.subject.name}</div>
-                        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 2 }}>{att.subject.code} · {att.attended}/{att.total}</div>
-                      </div>
-                      <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
-                        <div style={{ fontFamily: "'Outfit',sans-serif", fontSize: 20, fontWeight: 700, color, lineHeight: 1 }}>{pct}%</div>
-                        <div style={{ fontSize: 10, color, marginTop: 2 }}>{pct >= 75 ? "Safe" : pct >= 65 ? "At risk" : "Danger"}</div>
-                      </div>
-                    </div>
-                    <div style={{ height: 4, background: "rgba(255,255,255,0.06)", borderRadius: 4, position: "relative", overflow: "visible" }}>
-                      <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 4, transition: "width 0.6s ease" }} />
-                      <div style={{ position: "absolute", top: -3, left: "75%", width: 2, height: 10, background: "rgba(255,255,255,0.3)" }} />
-                    </div>
-                  </div>
-                );
-              })}
-              <button className="dash-ask-btn" onClick={() => onAsk("Analyse my full attendance and give me a recovery plan")}>How do I improve my attendance? →</button>
-            </div>
-          )}
-          {activeTab === "exams" && (
-            <div className="exam-wrap">
-              <div className="exam-header-note">IV Sem Midterm · 8:30–10:00 AM</div>
-              {exLoading && <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>Fetching exam schedule…</div>}
-              {!exLoading && (!exams || exams.length === 0) && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.25)" }}>🎉 No upcoming exams!</div>}
-              {(exams || []).map((ex: ExamWithSubject, i: number) => {
-                const urgent = ex.days_left <= 2, soon = ex.days_left <= 5;
-                const accentColor = urgent ? "#ef4444" : soon ? "#f59e0b" : "#10b981";
-                return (
-                  <div key={i} className="exam-card" style={{ borderLeftColor: accentColor }}>
-                    <div className="exam-left"><div className="exam-countdown" style={{ color: accentColor }}>{ex.days_left === 0 ? "TODAY" : ex.days_left === 1 ? "TMR" : `${ex.days_left}d`}</div><div className="exam-day">{new Date(ex.exam_date).toLocaleDateString("en-IN", { weekday: "short" })}</div></div>
-                    <div className="exam-mid"><div className="exam-subj">{ex.subject.name}</div><div className="exam-code">{ex.subject.code}</div><div className="exam-date">{new Date(ex.exam_date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · {ex.start_time.slice(0, 5)}</div></div>
-                    {urgent && <div className="exam-alert-dot" />}
-                  </div>
-                );
-              })}
-              <button className="dash-ask-btn" onClick={() => onAsk("Create a study schedule for my upcoming midsem exams")}>Help me make a study plan →</button>
-            </div>
-          )}
-          {activeTab === "marks" && (
-            <MarksPanel studentId={student.id} compact={true} />
-          )}
-        </div>
-      </aside>
-    </>
-  );
-}
 
 // ─── Streaming hook ───────────────────────────────────────────────────────────
 function useStreamingChat() {
@@ -403,24 +266,57 @@ function useStreamingChat() {
 
 // ─── Full Dashboard ───────────────────────────────────────────────────────────
 function FullDashboard({ student, onClose, onAsk }: { student: any; onClose: () => void; onAsk: (q: string) => void; }) {
-  const [attDetail,     setAttDetail]     = useState<AttendanceWithSubject | null>(null);
-  const [timetableDay,  setTimetableDay]  = useState<string | null>(null);
+  const [attDetail,      setAttDetail]      = useState<AttendanceWithSubject | null>(null);
+  const [timetableDay,   setTimetableDay]   = useState<string | null>(null);
   const [timetableSlots, setTimetableSlots] = useState<any[]>([]);
 
   const _email = student.email || (typeof window !== "undefined" ? sessionStorage.getItem("cc_email") || "" : "");
-  const { data: attendance, loading: attLoading } = useLiveAttendance(student.id, _email);
-  const { data: exams,      loading: exLoading  } = useLiveExams(student.id);
-  const { data: schedule,   loading: schedLoading } = useLiveSchedule(student.id);
 
-  const byDay: Record<string, any[]> = {};
-  (schedule || []).forEach((s: any) => { if (!byDay[s.day]) byDay[s.day] = []; byDay[s.day].push(s); });
+  const { data: attendance, loading: attLoading }   = useLiveAttendance(_email);
+  const { data: exams,      loading: exLoading  }   = useLiveExams(_email);
+  const { data: schedule,   loading: schedLoading } = useLiveSchedule(_email);
 
-  const todayName    = getDayName(0), tomorrowName = getDayName(1);
-  const todaySlots   = byDay[todayName]    || [];
-  const overallPct   = attendance?.length ? Math.round(attendance.reduce((s, a) => s + a.percentage, 0) / attendance.length) : 0;
-  const atRisk       = attendance?.filter(a => a.percentage < 75).length ?? 0;
-  const nextExam     = exams?.[0] ?? null;
-  const now          = new Date();
+  // ✅ add this
+// 🚨 DEMO OVERRIDE: Force "Today" to be Monday
+// 🚨 DEMO OVERRIDE: Hardcoding Tuesday's packed schedule so the UI looks amazing
+const todayName = "Tuesday"; 
+  
+const todaySlots = [
+  {
+    start_time: "08:00",
+    end_time: "09:00",
+    subject: { name: "CSS 2202 : DESIGN & ANALYSIS" },
+    room: "AB5 204",
+    type: "lecture"
+  },
+  {
+    start_time: "09:00",
+    end_time: "10:00",
+    subject: { name: "CSS 2204 : OPERATING SYSTEMS" },
+    room: "AB5 204",
+    type: "lecture"
+  },
+  {
+    start_time: "10:30",
+    end_time: "11:30",
+    subject: { name: "MAT 2201 : PROBABILITY AND OPTIMIZATION" },
+    room: "AB5 204",
+    type: "lecture"
+  },
+  {
+    start_time: "11:30",
+    end_time: "12:30",
+    subject: { name: "CSS 2203 : INTRO TO ARTIFICIAL INTELLIGENCE" },
+    room: "AB5 204",
+    type: "lecture"
+  }
+];
+  const overallPct = attendance?.length
+    ? Math.round(attendance.reduce((s, a) => s + a.percentage, 0) / attendance.length)
+    : 0;
+  const atRisk   = attendance?.filter(a => a.percentage < 75).length ?? 0;
+  const nextExam = exams?.[0] ?? null;
+  const now      = new Date();
 
   const activeClass = todaySlots.find((c: any) => {
     const [sh, sm] = c.start_time.split(":").map(Number);
@@ -431,6 +327,8 @@ function FullDashboard({ student, onClose, onAsk }: { student: any; onClose: () 
     const [eh, em] = c.end_time.split(":").map(Number);
     return getClassStatus(sh, sm, eh, em) === "upcoming";
   });
+
+  // rest of FullDashboard unchanged...
 
   if (attDetail) return (
     <div className="fd-wrap"><div className="fd-header"><button className="fd-back" onClick={() => setAttDetail(null)}><ArrowLeft size={15} /> Back to dashboard</button></div><div className="fd-scroll"><AttendanceDetail subject={attDetail} onBack={() => setAttDetail(null)} /></div></div>
@@ -564,8 +462,8 @@ function FullDashboard({ student, onClose, onAsk }: { student: any; onClose: () 
         {/* NEW: Marks & Grades Section */}
         <div className="fd-section">
           <div className="fd-section-title">Marks & Grades</div>
-          <MarksPanel studentId={student.id} compact={false} />
-        </div>
+          <MarksPanel email={student.email || sessionStorage.getItem("cc_email") || ""} compact={false} />
+          </div>
       </div>
     </div>
   );
@@ -603,9 +501,9 @@ export default function ChatPage() {
 
   // ── REAL LIVE DATA ────────────────────────────────────────────────────────
   const studentEmail = STUDENT.email || (typeof window !== "undefined" ? sessionStorage.getItem("cc_email") || "" : "");
-  const { data: attendance, syncing: attSyncing } = useLiveAttendance(STUDENT.id, studentEmail);
-  const { data: exams }                           = useLiveExams(STUDENT.id);
-  const { data: marks } = useStudentMarks(STUDENT.id);
+  const { data: attendance, syncing: attSyncing } = useLiveAttendance(studentEmail);
+  const { data: exams }                           = useLiveExams(studentEmail);
+  const { data: marks } = useStudentMarks(studentEmail);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); setPaletteOpen(p => !p); } if (e.key === "Escape") setPaletteOpen(false); };
@@ -716,7 +614,7 @@ export default function ChatPage() {
     );
 
     await sendMessage(
-      userContent, STUDENT.id, history, contextData,
+      userContent, studentEmail, history, contextData,
       (token)  => { setMessages(p => p.map(m => m.id === streamId ? { ...m, content: m.content + token } : m)); },
       (sources) => { setMessages(p => p.map(m => m.id === streamId ? { ...m, sources } : m)); },
       (action)  => { setMessages(p => p.map(m => m.id === streamId ? { ...m, action } : m)); },

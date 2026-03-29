@@ -6,32 +6,29 @@
 // Palette: #0a0a0f base, electric blue accent (#3b82f6), zero purple.
 // This is SYSTEM ADMIN territory — dense, data-first, power-user facing.
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   LayoutDashboard, BookOpen, FileText, BarChart2, Cpu, Users, FlaskConical,
-  Plug, Settings, Bell, RefreshCw, Upload, Trash2, ChevronRight, Check, X,
-  AlertTriangle, CheckCircle, Clock, Database, Globe, Plus, Search,
-  ArrowUpRight, Activity, Shield, Zap, MoreHorizontal, LogOut, Server,
-  HardDrive, Edit, ExternalLink, Download, Filter, Eye, ToggleLeft,
-  ToggleRight, Info, Mail, User,
+  Plug, Settings, RefreshCw, Upload, Trash2, ChevronRight, Check, X,
+  AlertTriangle, CheckCircle, Database, Globe, Plus, Search,
+  ArrowUpRight, Shield, Zap, LogOut, Server,
+  HardDrive, ExternalLink
 } from "lucide-react";
-import { SubjectManagementView } from "@/components/admin/SubjectManagementView";
-
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { getSession, clearSession } from "@/lib/auth";
-import { UserRegistryView } from "@/components/admin/UserRegistryView";
-
+import { SubjectManagementView } from "@/components/admin/SubjectManagementView";
 
 // ── Nav definition ─────────────────────────────────────────────────────────────
-type View = "overview"|"subjects"|"documents"|"attendance"|"workflows"|"users"|"lab"|"integrations"|"settings";
+type View = "overview"|"subjects"|"documents"|"attendance"|"workflows"|"users"|"enrollments"|"lab"|"integrations"|"settings";
 
 const NAV: {id:View; label:string; icon:React.ElementType; group:"platform"|"academic"|"intelligence"}[] = [
   {id:"overview",     label:"Overview",      icon:LayoutDashboard, group:"platform"},
-  {id:"users",        label:"User Registry",  icon:Users,           group:"platform"},
+  {id:"users",        label:"User Registry", icon:Users,           group:"platform"},
   {id:"integrations", label:"Integrations",  icon:Plug,            group:"platform"},
   {id:"settings",     label:"Settings",      icon:Settings,        group:"platform"},
   {id:"subjects",     label:"Subjects",      icon:BookOpen,        group:"academic"},
+  {id:"enrollments",  label:"Class Roster",  icon:Users,           group:"academic"},
   {id:"documents",    label:"Documents",     icon:FileText,        group:"academic"},
   {id:"attendance",   label:"Attendance",    icon:BarChart2,       group:"academic"},
   {id:"lab",          label:"Lab Requests",  icon:FlaskConical,    group:"academic"},
@@ -41,7 +38,28 @@ const NAV: {id:View; label:string; icon:React.ElementType; group:"platform"|"aca
 const G_LABEL: Record<string,string> = { platform:"Platform", academic:"Academic", intelligence:"Intelligence" };
 
 // ── Shared primitives ──────────────────────────────────────────────────────────
-const Badge = ({ color, children }: { color:"green"|"blue"|"amber"|"red"|"gray"; children:React.ReactNode }) => {
+
+const PageHeader = ({ title, sub }: { title:string; sub:string }) => (
+  <div style={{ marginBottom:22 }}>
+    <div style={{ fontSize:20, fontWeight:700, color:"var(--text)", letterSpacing:"-0.02em", marginBottom:4 }}>{title}</div>
+    <div style={{ fontSize:13, color:"rgba(255,255,255,.3)" }}>{sub}</div>
+  </div>
+);
+
+const Toast = ({ msg }: { msg:string }) => (
+  <div style={{
+    position:"fixed", top:18, right:18, zIndex:9999,
+    background: msg.startsWith("Error") || msg.includes("⚠️") ? "#dc2626" : "#16a34a",
+    color:"#fff", padding:"10px 16px", borderRadius:8,
+    fontSize:13, fontWeight:500, boxShadow:"0 4px 20px rgba(0,0,0,.5)",
+    animation:"fadeUp .2s ease",
+  }}>{msg}</div>
+);
+
+const Save = ({ size }: { size:number }) => <HardDrive size={size} />;
+const Building = ({ size }: { size:number }) => <Server size={size} />;
+
+const Badge = ({ color, children, style }: { color:"green"|"blue"|"amber"|"red"|"gray"; children:React.ReactNode; style?: React.CSSProperties }) => {
   const map = {
     green: "rgba(34,197,94,.12) #4ade80 rgba(34,197,94,.2)",
     blue:  "rgba(59,130,246,.12) #60a5fa rgba(59,130,246,.2)",
@@ -51,7 +69,7 @@ const Badge = ({ color, children }: { color:"green"|"blue"|"amber"|"red"|"gray";
   };
   const [bg, fg, br] = map[color].split(" ");
   return (
-    <span style={{ background:bg, color:fg, border:`1px solid ${br}`, padding:"2px 7px", borderRadius:4, fontSize:10, fontWeight:700, letterSpacing:".05em", textTransform:"uppercase", fontFamily:"var(--mono)", display:"inline-flex", alignItems:"center", gap:4 }}>
+    <span style={{ background:bg, color:fg, border:`1px solid ${br}`, padding:"2px 7px", borderRadius:4, fontSize:10, fontWeight:700, letterSpacing:".05em", textTransform:"uppercase", fontFamily:"var(--mono)", display:"inline-flex", alignItems:"center", gap:4, ...style }}>
       {children}
     </span>
   );
@@ -137,7 +155,6 @@ const TR = ({ cells, onClick }: { cells: React.ReactNode[]; onClick?:()=>void })
   </tr>
 );
 
-// ── METRIC CARD ────────────────────────────────────────────────────────────────
 const Metric = ({ label, value, sub, accent, Icon }:
   { label:string; value:React.ReactNode; sub?:string; accent?:string; Icon?:React.ElementType }) => (
   <div className="adm-card" style={{ padding:"20px 22px", position:"relative", overflow:"hidden" }}>
@@ -200,7 +217,7 @@ function OverviewView() {
 
   const metrics = [
     { label:"Students",      value: busy ? "…" : stats.students,     sub:"Total registered", accent:"#3b82f6", Icon: Users },
-    { label:"Faculty",       value: busy ? "…" : stats.faculty,      sub:"Staff accounts",   accent:"#10b981", Icon: User },
+    { label:"Faculty",       value: busy ? "…" : stats.faculty,      sub:"Staff accounts",   accent:"#10b981", Icon: Users },
     { label:"Subjects",      value: busy ? "…" : stats.subjects,     sub:"Active this term", accent:"#8b5cf6", Icon: BookOpen },
     { label:"Documents",     value: busy ? "…" : stats.docs,         sub:"Uploaded files",   accent:"#f59e0b", Icon: FileText },
     { label:"AI Workflows",  value: busy ? "…" : stats.workflows,    sub:"Taught paths",     accent:"#06b6d4", Icon: Cpu },
@@ -244,6 +261,283 @@ function OverviewView() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIEW: ENROLLMENTS & ASSIGNMENTS
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// VIEW: ENROLLMENTS & ASSIGNMENTS
+// ─────────────────────────────────────────────────────────────────────────────
+function EnrollmentsView() {
+  const [subjects, setSubjects] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [enrollments, setEnrollments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selSubject, setSelSubject] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState("");
+
+  // Assign inputs
+  const [newProfId, setNewProfId] = useState("");
+  const [newStudentId, setNewStudentId] = useState("");
+  
+  // Bulk import state
+  const [showBulk, setShowBulk] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+
+  const loadData = async () => {
+    setLoading(true);
+    // Fetch all required data in parallel
+    // 🚨 FIX: Changed 'subject_enrollments' to 'enrollments' to match your schema
+    const [subRes, usrRes, enrRes] = await Promise.all([
+      supabase.from("subjects").select("*").order("name"),
+      supabase.from("users").select("id, name, email, role").order("name"),
+      supabase.from("enrollments").select("*")
+    ]);
+    
+    setSubjects(subRes.data || []);
+    setUsers(usrRes.data || []);
+    setEnrollments(enrRes.data || []);
+    
+    // Auto-select first subject if none selected
+    if (!selSubject && subRes.data && subRes.data.length > 0) {
+      setSelSubject(subRes.data[0].id);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  const notify = (m: string) => { setToast(m); setTimeout(() => setToast(""), 3500); };
+
+  const assignProfessor = async () => {
+    if (!selSubject || !newProfId) return;
+    setSaving(true);
+    const { error } = await supabase
+      .from("subjects")
+      .update({ professor_id: newProfId })
+      .eq("id", selSubject);
+      
+    setSaving(false);
+    if (error) { notify(`Error: ${error.message}`); return; }
+    notify("✓ Professor assigned successfully");
+    setNewProfId("");
+    loadData();
+  };
+
+  const enrollStudent = async () => {
+    if (!selSubject || !newStudentId) return;
+    setSaving(true);
+    
+    const existing = enrollments.find(e => e.subject_id === selSubject && e.student_id === newStudentId);
+    if (existing) {
+      setSaving(false);
+      notify("⚠️ Student is already enrolled in this subject.");
+      return;
+    }
+
+    // 🚨 FIX: Changed 'subject_enrollments' to 'enrollments'
+    const { error } = await supabase
+      .from("enrollments")
+      .insert([{ subject_id: selSubject, student_id: newStudentId }]);
+      
+    setSaving(false);
+    if (error) { notify(`Error: ${error.message}`); return; }
+    notify("✓ Student enrolled successfully");
+    setNewStudentId("");
+    loadData();
+  };
+
+  // 🚨 NEW: Bulk Enroll via Pasted CSV / List
+  const handleBulkEnroll = async () => {
+    if (!selSubject || !bulkText.trim()) return;
+    setSaving(true);
+
+    // Split by newlines or commas
+    const rawInputs = bulkText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    
+    const matchedUserIds: string[] = [];
+    const notFound: string[] = [];
+
+    // Match inputs against existing users (can match by email or ID)
+    rawInputs.forEach(val => {
+      const u = users.find(user => user.id === val || user.email === val);
+      if (u) {
+        // Prevent adding duplicates
+        const alreadyEnrolled = enrollments.some(e => e.subject_id === selSubject && e.student_id === u.id);
+        if (!alreadyEnrolled) matchedUserIds.push(u.id);
+      } else {
+        notFound.push(val);
+      }
+    });
+
+    if (matchedUserIds.length === 0) {
+      notify(`⚠️ No valid unenrolled students found. ${notFound.length} unmatched inputs.`);
+      setSaving(false);
+      return;
+    }
+
+    const inserts = matchedUserIds.map(uid => ({
+      subject_id: selSubject,
+      student_id: uid
+    }));
+
+    // 🚨 FIX: Changed 'subject_enrollments' to 'enrollments'
+    const { error } = await supabase.from("enrollments").insert(inserts);
+
+    setSaving(false);
+    if (error) { 
+      notify(`Error: ${error.message}`); 
+    } else {
+      notify(`✓ ${matchedUserIds.length} students enrolled! ${notFound.length > 0 ? `(${notFound.length} not found)` : ''}`);
+      setBulkText("");
+      setShowBulk(false);
+      loadData();
+    }
+  };
+
+  const removeEnrollment = async (studentId: string, studentName: string) => {
+    if (!confirm(`Remove ${studentName} from this subject?`)) return;
+    // 🚨 FIX: Changed 'subject_enrollments' to 'enrollments'
+    await supabase.from("enrollments").delete().eq("subject_id", selSubject).eq("student_id", studentId);
+    notify(`${studentName} removed`); 
+    loadData();
+  };
+
+  // Filter helpers
+  const activeSubData = subjects.find(s => s.id === selSubject);
+  const enrolledStudentIds = enrollments.filter(e => e.subject_id === selSubject).map(e => e.student_id);
+  const enrolledStudents = users.filter(u => enrolledStudentIds.includes(u.id));
+  
+  const availableProfessors = users.filter(u => u.role === "faculty");
+  const availableStudents = users.filter(u => u.role === "student" && !enrolledStudentIds.includes(u.id));
+
+  const darkOptionStyle = { background: "#0e1015", color: "#e2e8f0" };
+
+  return (
+    <div>
+      {toast && <Toast msg={toast} />}
+      <PageHeader title="Class Enrollments" sub="Assign professors to subjects and manage student rosters" />
+
+      {/* Subject Selector */}
+      <div className="adm-card" style={{ padding: "18px 20px", marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,.4)", textTransform: "uppercase", letterSpacing: ".07em", marginBottom: 6, display: "block" }}>Select Subject to Manage</label>
+            <select 
+              value={selSubject} 
+              onChange={e => setSelSubject(e.target.value)} 
+              className="adm-field" 
+              style={{ width: "100%", fontSize: 14, padding: "10px 12px", fontFamily: "var(--font)", background: "rgba(255,255,255,0.03)", colorScheme: "dark" }}
+            >
+              {subjects.map(s => (
+                <option key={s.id} value={s.id} style={darkOptionStyle}>{s.code} — {s.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ color: "rgba(255,255,255,0.4)", padding: 20 }}>Loading enrollment data...</div>
+      ) : !activeSubData ? (
+        <div style={{ color: "rgba(255,255,255,0.4)", padding: 20 }}>Please select a subject.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20, alignItems: "start" }}>
+          
+          {/* LEFT COL: Professor Assignment */}
+          <div className="adm-card" style={{ padding: "18px 20px", borderTop: "3px solid #10b981" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#fff", marginBottom: 16 }}>Professor Assignment</div>
+            
+            <div style={{ background: "rgba(255,255,255,0.02)", padding: "12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)", marginBottom: 20 }}>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 4 }}>Current Professor:</div>
+              <div style={{ fontSize: 14, fontWeight: 500, color: activeSubData.professor_id ? "#10b981" : "rgba(255,255,255,0.3)" }}>
+                {activeSubData.professor_id 
+                  ? (users.find(u => u.id === activeSubData.professor_id)?.name || activeSubData.professor_id) 
+                  : "Unassigned"}
+              </div>
+            </div>
+
+            <label style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,.4)", textTransform: "uppercase", letterSpacing: ".07em", marginBottom: 6, display: "block" }}>Change Professor</label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <select 
+                value={newProfId} 
+                onChange={e => setNewProfId(e.target.value)} 
+                className="adm-field" 
+                style={{ fontFamily: "var(--font)", fontSize: 13, colorScheme: "dark" }}
+              >
+                <option value="" style={darkOptionStyle}>-- Select Faculty --</option>
+                {availableProfessors.map(p => <option key={p.id} value={p.id} style={darkOptionStyle}>{p.name}</option>)}
+              </select>
+              <Btn variant="primary" onClick={assignProfessor} disabled={saving || !newProfId}>Assign Professor</Btn>
+            </div>
+          </div>
+
+          {/* RIGHT COL: Student Roster */}
+          <div className="adm-card" style={{ padding: "18px 20px", borderTop: "3px solid #3b82f6" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Student Roster <Badge color="blue" style={{ marginLeft: 8 }}>{enrolledStudents.length}</Badge></div>
+              <button onClick={() => setShowBulk(!showBulk)} style={{ background: "transparent", border: "none", color: "#60a5fa", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "var(--font)" }}>
+                {showBulk ? "Cancel Bulk Import" : "+ Bulk Import"}
+              </button>
+            </div>
+
+            {/* BULK IMPORT UI */}
+            {showBulk ? (
+              <div style={{ background: "rgba(59,130,246,.04)", padding: "16px", borderRadius: 8, border: "1px solid rgba(59,130,246,.15)", marginBottom: 20 }}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.6)", marginBottom: 8 }}>
+                  Paste a list of Student IDs or Emails (separated by commas or newlines).
+                </div>
+                <textarea 
+                  value={bulkText} 
+                  onChange={e => setBulkText(e.target.value)} 
+                  placeholder="e.g. 213CS1001@mit.edu, 213CS1002@mit.edu"
+                  className="adm-field" 
+                  style={{ height: 100, resize: "vertical", fontFamily: "var(--mono)", fontSize: 12, marginBottom: 12 }} 
+                />
+                <Btn variant="primary" icon={Database} onClick={handleBulkEnroll} disabled={saving || !bulkText.trim()}>
+                  {saving ? "Processing..." : "Process Bulk Enrollment"}
+                </Btn>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 8, marginBottom: 20, background: "rgba(59,130,246,.04)", padding: "12px", borderRadius: 8, border: "1px solid rgba(59,130,246,.15)", alignItems: "center" }}>
+                <select 
+                  value={newStudentId} 
+                  onChange={e => setNewStudentId(e.target.value)} 
+                  className="adm-field" 
+                  style={{ flex: 1, fontFamily: "var(--font)", fontSize: 13, colorScheme: "dark", margin: 0 }}
+                >
+                  <option value="" style={darkOptionStyle}>-- Add Single Student to Class --</option>
+                  {availableStudents.map(s => <option key={s.id} value={s.id} style={darkOptionStyle}>{s.name} ({s.email})</option>)}
+                </select>
+                <Btn variant="primary" icon={Plus} onClick={enrollStudent} disabled={saving || !newStudentId}>Add</Btn>
+              </div>
+            )}
+
+            <div style={{ maxHeight: "400px", overflowY: "auto", paddingRight: 4 }}>
+              {enrolledStudents.length === 0 ? (
+                <div style={{ padding: "20px 0", textAlign: "center", color: "rgba(255,255,255,0.3)", fontSize: 13 }}>No students enrolled.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {enrolledStudents.map(s => (
+                    <div key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: "#fff" }}>{s.name}</div>
+                        <div style={{ fontSize: 11, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.4)", marginTop: 2 }}>{s.email}</div>
+                      </div>
+                      <Btn variant="ghost" small icon={X} onClick={() => removeEnrollment(s.id, s.name)}></Btn>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+        </div>
+      )}
     </div>
   );
 }
@@ -628,178 +922,333 @@ function AttendanceView() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIEW: AI WORKFLOWS
-// ─────────────────────────────────────────────────────────────────────────────
-function WorkflowsView() {
-  const [workflows, setWorkflows] = useState<any[]>([]);
-  const [sources,   setSources]   = useState<any[]>([]);
-  const [loading,   setLoading]   = useState(true);
-
-  useEffect(() => {
-    Promise.all([
-      supabase.from("agent_workflows").select("*, integration_sources(college_name)").order("created_at", { ascending:false }),
-      supabase.from("integration_sources").select("*").order("created_at", { ascending:false }),
-    ]).then(([{ data:wf }, { data:src }]) => {
-      setWorkflows(wf||[]); setSources(src||[]); setLoading(false);
-    });
-  }, []);
-
-  const COLORS: Record<string,string> = { attendance:"#3b82f6", grades:"#10b981", lab_booking:"#8b5cf6", timetable:"#f59e0b", fees:"#ef4444", notices:"#ec4899" };
-
-  return (
-    <div>
-      <PageHeader title="AI Workflow Configuration" sub="Navigation paths taught to the AI during onboarding — the AI uses these to guide students" />
-
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-        <div>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-            <span style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>Connected Portals</span>
-            <Btn variant="primary" small icon={Plus} onClick={()=>window.location.href="/onboarding"}>Add Portal</Btn>
-          </div>
-          {loading && <div style={{ height:80, background:"rgba(255,255,255,.03)", borderRadius:10 }} />}
-          {!loading && sources.length === 0 && (
-            <div className="adm-card" style={{ padding:"28px", textAlign:"center" }}>
-              <Plug size={22} color="rgba(255,255,255,.15)" style={{marginBottom:8}} />
-              <div style={{ fontSize:13, color:"rgba(255,255,255,.35)", marginBottom:10 }}>No portals connected</div>
-              <Btn variant="primary" icon={Plus} onClick={()=>window.location.href="/onboarding"}>Run Onboarding</Btn>
-            </div>
-          )}
-          {sources.map((s,i) => (
-            <div key={i} className="adm-card" style={{ padding:"16px 18px", marginBottom:8 }}>
-              <div style={{ display:"flex", alignItems:"flex-start", gap:12 }}>
-                <div style={{ width:36, height:36, borderRadius:9, background:"rgba(59,130,246,.1)", border:"1px solid rgba(59,130,246,.2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                  <Globe size={16} color="#60a5fa" />
-                </div>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:14, fontWeight:600, color:"var(--text)", marginBottom:3 }}>{s.college_name}</div>
-                  <div style={{ fontSize:11, fontFamily:"var(--mono)", color:"rgba(255,255,255,.3)", marginBottom:8 }}>{s.portal_url}</div>
-                  <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
-                    {(s.actions||[]).map((a:string) => (
-                      <span key={a} style={{ padding:"2px 7px", borderRadius:4, background:`${COLORS[a]||"#555"}15`, color:COLORS[a]||"rgba(255,255,255,.4)", border:`1px solid ${COLORS[a]||"#555"}25`, fontSize:10, fontFamily:"var(--mono)", fontWeight:600 }}>{a}</span>
-                    ))}
-                  </div>
-                </div>
-                <Badge color="green">Active</Badge>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div>
-          <div style={{ fontSize:13, fontWeight:600, color:"var(--text)", marginBottom:10 }}>Taught Workflows ({workflows.length})</div>
-          {workflows.length === 0 && !loading && (
-            <div className="adm-card" style={{ padding:"24px", textAlign:"center", fontSize:12, color:"rgba(255,255,255,.3)" }}>
-              No workflows — complete onboarding to teach the AI your portal paths
-            </div>
-          )}
-          {workflows.map((w,i) => {
-            const color = COLORS[w.action_name] || "#555";
-            return (
-              <div key={i} className="adm-card" style={{ padding:"14px 16px", marginBottom:8, borderLeft:`3px solid ${color}30` }}>
-                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
-                  <div style={{ width:8, height:8, borderRadius:"50%", background:color, flexShrink:0 }} />
-                  <span style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>{w.action_name}</span>
-                  <span style={{ fontSize:10, color:"rgba(255,255,255,.25)", marginLeft:"auto" }}>{w.integration_sources?.college_name}</span>
-                </div>
-                {(w.steps||[]).map((s:any,j:number) => (
-                  <div key={j} style={{ fontSize:11, fontFamily:"var(--mono)", color:"rgba(255,255,255,.35)", paddingLeft:18, lineHeight:1.6 }}>{s.path}</div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // VIEW: INTEGRATIONS
 // ─────────────────────────────────────────────────────────────────────────────
 function IntegrationsView() {
-  const [sources, setSources] = useState<any[]>([]);
+  const [source,  setSource]  = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState<string|null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [toast,   setToast]   = useState("");
 
-  const notify = (m:string) => { setToast(m); setTimeout(()=>setToast(""),3000); };
+  const ACTION_COLORS = [
+    "#3b82f6", "#10b981", "#8b5cf6", "#f59e0b",
+    "#ef4444", "#ec4899", "#06b6d4", "#6366f1",
+  ];
+
+  const notify = (m: string) => { setToast(m); setTimeout(() => setToast(""), 3500); };
 
   useEffect(() => {
-    supabase.from("integration_sources").select("*").order("created_at",{ascending:false})
-      .then(({ data }) => { setSources(data||[]); setLoading(false); });
+    (async () => {
+      const { data: src } = await supabase
+        .from("integration_sources")
+        .select("*")
+        .limit(1)
+        .maybeSingle();
+ 
+      if (src) {
+        const { data: wf } = await supabase
+          .from("agent_workflows")
+          .select("action_name");
+ 
+        setSource({
+          ...src,
+          actions: (wf || []).map((w: any) => w.action_name),
+        });
+      }
+ 
+      setLoading(false);
+    })();
   }, []);
 
-  const toggleActive = async (id:string, current:boolean) => {
-    await supabase.from("integration_sources").update({ active:!current }).eq("id", id);
-    setSources(s => s.map(x => x.id===id ? {...x, active:!current} : x));
-    notify(!current ? "Integration activated" : "Integration deactivated");
-  };
-
-  const deleteSource = async (id:string, name:string) => {
-    if (!confirm(`Remove ${name}? Workflows will also be deleted.`)) return;
-    await supabase.from("agent_workflows").delete().eq("college_id", id);
-    await supabase.from("integration_sources").delete().eq("id", id);
-    setSources(s => s.filter(x => x.id !== id));
-    notify(`${name} removed`);
+  const handleSync = async () => {
+    if (!source) return;
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/agent/sync-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: source.college_name }),
+      });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      notify("✓ Sync complete");
+      const { data } = await supabase
+        .from("integration_sources")
+        .select("*")
+        .limit(1)
+        .maybeSingle();
+      setSource(data);
+    } catch (e: any) {
+      notify(`Error: ${e.message}`);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   return (
     <div>
       {toast && <Toast msg={toast} />}
-      <PageHeader title="Integrations" sub="Connected college portals, data pipelines, and third-party services" />
+      <PageHeader
+        title="Integrations"
+        sub="Connected college portal, AI services, and data pipeline"
+      />
 
-      {/* System services */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:18 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 18 }}>
         {[
-          { name:"Supabase",   sub:"DB + Storage + Realtime", color:"#10b981", Icon:Database,  status:"connected" },
-          { name:"Azure AI",   sub:"GPT-4o via AI Foundry",   color:"#3b82f6", Icon:Zap,       status:"connected" },
-          { name:"Pinecone",   sub:"Vector search index",      color:"#8b5cf6", Icon:Cpu,       status:"connected" },
-        ].map((s,i) => (
-          <div key={i} className="adm-card" style={{ padding:"18px 20px" }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
-              <div style={{ width:34, height:34, borderRadius:8, background:`${s.color}15`, border:`1px solid ${s.color}25`, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          { name: "Supabase", sub: "DB + Storage + Realtime", color: "#10b981", Icon: Database, status: "connected" },
+          { name: "Azure AI", sub: "GPT-4o via AI Foundry",   color: "#3b82f6", Icon: Zap,      status: "connected" },
+          { name: "Pinecone", sub: "Vector search index",      color: "#8b5cf6", Icon: Cpu,      status: "connected" },
+        ].map((s, i) => (
+          <div key={i} className="adm-card" style={{ padding: "18px 20px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ width: 34, height: 34, borderRadius: 8, background: `${s.color}15`, border: `1px solid ${s.color}25`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <s.Icon size={16} color={s.color} />
               </div>
               <Badge color="green">{s.status}</Badge>
             </div>
-            <div style={{ fontSize:14, fontWeight:600, color:"var(--text)", marginBottom:3 }}>{s.name}</div>
-            <div style={{ fontSize:11, color:"rgba(255,255,255,.3)" }}>{s.sub}</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)", marginBottom: 3 }}>{s.name}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,.3)" }}>{s.sub}</div>
           </div>
         ))}
       </div>
 
-      {/* Portal integrations */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
-        <span style={{ fontSize:13, fontWeight:600, color:"var(--text)" }}>College Portals ({sources.length})</span>
-        <div style={{ display:"flex", gap:8 }}>
-          <Btn variant="secondary" icon={Upload}>Import CSV</Btn>
-          <Btn variant="primary"   icon={Plus} onClick={()=>window.location.href="/onboarding"}>Connect Portal</Btn>
-        </div>
-      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 10 }}>Connected Portal</div>
 
-      <Table headers={["College","Portal","System","Workflows","Status","Actions"]}>
-        {loading ? <TR cells={["Loading…","","","","",""]} /> :
-         sources.length === 0 ? <TR cells={[<span style={{color:"rgba(255,255,255,.3)"}}>No portals connected — <a href="/onboarding" style={{color:"#60a5fa"}}>run onboarding</a></span>,"","","","",""]} /> :
-         sources.map((s,i) => <TR key={i} cells={[
-           <span style={{color:"var(--text)",fontWeight:500}}>{s.college_name}</span>,
-           <a href={s.portal_url} target="_blank" rel="noopener noreferrer" style={{fontFamily:"var(--mono)",fontSize:11,color:"#60a5fa",textDecoration:"none"}}>{s.portal_url}</a>,
-           <Badge color="blue">{s.portal_type}</Badge>,
-           <span style={{fontFamily:"var(--mono)"}}>{(s.actions||[]).length}</span>,
-           <button onClick={()=>toggleActive(s.id,s.active)} style={{background:"transparent",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
-             {s.active
-               ? <><ToggleRight size={18} color="#4ade80"/><span style={{fontSize:12,color:"#4ade80"}}>Active</span></>
-               : <><ToggleLeft  size={18} color="rgba(255,255,255,.3)"/><span style={{fontSize:12,color:"rgba(255,255,255,.3)"}}>Inactive</span></>
-             }
-           </button>,
-           <div style={{display:"flex",gap:4}}>
-             <Btn variant="secondary" small icon={RefreshCw}
-               onClick={async()=>{ setSyncing(s.id); await new Promise(r=>setTimeout(r,1800)); setSyncing(null); notify("Synced"); }}
-               disabled={syncing===s.id}>{syncing===s.id?"…":"Sync"}</Btn>
-             <Btn variant="ghost" small icon={Trash2} onClick={()=>deleteSource(s.id,s.college_name)}></Btn>
-           </div>,
-         ]} />)
-        }
-      </Table>
+      {loading && (
+        <div className="adm-card" style={{ padding: "28px", textAlign: "center", color: "rgba(255,255,255,.3)", fontSize: 12 }}>
+          Loading…
+        </div>
+      )}
+
+      {!loading && !source && (
+        <div className="adm-card" style={{ padding: "32px", textAlign: "center" }}>
+          <Plug size={22} color="rgba(255,255,255,.15)" style={{ marginBottom: 10 }} />
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,.35)", marginBottom: 14 }}>No portal connected yet</div>
+          <Btn variant="primary" icon={Plus} onClick={() => window.location.href = "/onboarding"}>Run Onboarding</Btn>
+        </div>
+      )}
+
+      {!loading && source && (
+        <div className="adm-card" style={{ padding: "20px 22px" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+            <div style={{ width: 42, height: 42, borderRadius: 10, background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Globe size={19} color="#60a5fa" />
+            </div>
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 5 }}>
+                <span style={{ fontSize: 16, fontWeight: 700, color: "var(--text)" }}>{source.college_name}</span>
+                <Badge color="green">Connected</Badge>
+              </div>
+              
+              <a 
+                href={source.portal_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 11, fontFamily: "var(--mono)", color: "#60a5fa", textDecoration: "none" }}
+              >
+                {source.portal_url}
+              </a>
+
+              <div style={{ display: "flex", gap: 12, marginTop: 10, fontSize: 11, color: "rgba(255,255,255,.3)" }}>
+                <span>Mode: <span style={{ color: "rgba(255,255,255,.55)" }}>{source.portal_type || source.integration_type}</span></span>
+                {source.updated_at && (
+                  <span>Last synced: <span style={{ color: "rgba(255,255,255,.55)" }}>{new Date(source.updated_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</span></span>
+                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+                {(source.actions || []).map((a: string, idx: number) => {
+                  const c = ACTION_COLORS[idx % ACTION_COLORS.length];
+                  return (
+                    <span key={a} style={{
+                      padding: "2px 8px", borderRadius: 4,
+                      background: `${c}15`, color: c,
+                      border: `1px solid ${c}25`,
+                      fontSize: 10, fontFamily: "var(--mono)", fontWeight: 600,
+                    }}>
+                      {a}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 7, flexShrink: 0 }}>
+              <Btn variant="primary" icon={syncing ? undefined : RefreshCw} disabled={syncing} onClick={handleSync}>
+                {syncing ? "Syncing…" : "Sync Data"}
+              </Btn>
+              <Btn variant="secondary" icon={RefreshCw} onClick={() => window.location.href = "/onboarding"}>
+                Re-train Workflows
+              </Btn>
+            </div>
+          </div>
+
+          {syncing && (
+            <div style={{ marginTop: 14, padding: "10px 14px", background: "rgba(59,130,246,.06)", border: "1px solid rgba(59,130,246,.15)", borderRadius: 8, fontSize: 12, color: "#60a5fa", display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 10, height: 10, border: "2px solid rgba(59,130,246,.3)", borderTopColor: "#3b82f6", borderRadius: "50%", animation: "spin .7s linear infinite", flexShrink: 0 }} />
+              Playwright session active — fetching latest data from portal…
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIEW: AI WORKFLOWS
+// ─────────────────────────────────────────────────────────────────────────────
+function WorkflowsView() {
+  const [source,    setSource]    = useState<any>(null);
+  const [workflows, setWorkflows] = useState<any[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [running,   setRunning]   = useState<string | null>(null);
+  const [toast,     setToast]     = useState("");
+
+  const ACTION_COLORS = [
+    "#3b82f6", "#10b981", "#8b5cf6", "#f59e0b",
+    "#ef4444", "#ec4899", "#06b6d4", "#6366f1",
+  ];
+
+  const notify = (m: string) => { setToast(m); setTimeout(() => setToast(""), 3500); };
+
+  useEffect(() => {
+    (async () => {
+      const { data: src } = await supabase
+        .from("integration_sources")
+        .select("*")
+        .limit(1)
+        .maybeSingle();
+
+      setSource(src);
+
+      if (src) {
+        const { data: wf } = await supabase
+          .from("agent_workflows")
+          .select("*")
+          .order("created_at", { ascending: false });
+        setWorkflows(wf || []);
+      }      
+
+      setLoading(false);
+    })();
+  }, []);
+
+  const runWorkflow = async (action: string) => {
+    setRunning(action);
+    try {
+      const res = await fetch("/api/agent/run-workflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      notify(`✓ Workflow "${action}" executed`);
+    } catch (e: any) {
+      notify(`Error: ${e.message}`);
+    } finally {
+      setRunning(null);
+    }
+  };
+
+  return (
+    <div>
+      {toast && <Toast msg={toast} />}
+      <PageHeader
+        title="AI Workflow Configuration"
+        sub="Navigation paths the AI uses to guide students through your portal"
+      />
+
+      {!loading && source && (
+        <div className="adm-card" style={{ padding: "14px 18px", marginBottom: 16, display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 8, background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Globe size={15} color="#60a5fa" />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{source.college_name}</div>
+            <div style={{ fontSize: 11, fontFamily: "var(--mono)", color: "rgba(255,255,255,.3)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.portal_url}</div>
+          </div>
+          <Badge color="green">Connected</Badge>
+          <Btn variant="primary" small icon={Plus} onClick={() => window.location.href = "/onboarding"}>
+            Add Workflows
+          </Btn>
+        </div>
+      )}
+
+      {!loading && !source && (
+        <div className="adm-card" style={{ padding: "36px", textAlign: "center" }}>
+          <Cpu size={24} color="rgba(255,255,255,.12)" style={{ marginBottom: 10 }} />
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,.3)", marginBottom: 14 }}>
+            No portal connected — run onboarding first
+          </div>
+          <Btn variant="primary" icon={Plus} onClick={() => window.location.href = "/onboarding"}>Run Onboarding</Btn>
+        </div>
+      )}
+
+      {!loading && source && (
+        <div className="adm-card">
+          <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Taught Workflows</span>
+            <Badge color="gray">{workflows.length}</Badge>
+          </div>
+
+          {workflows.length === 0 && (
+            <div style={{ padding: "32px", textAlign: "center", fontSize: 12, color: "rgba(255,255,255,.25)" }}>
+              No workflows recorded yet — complete onboarding to teach the AI your portal paths
+            </div>
+          )}
+
+          {workflows.map((w, i) => {
+            const color = ACTION_COLORS[i % ACTION_COLORS.length];
+            const isRunning = running === w.action_name;
+            return (
+              <div
+                key={i}
+                style={{
+                  padding: "16px 18px",
+                  borderBottom: i < workflows.length - 1 ? "1px solid var(--border)" : "none",
+                  borderLeft: `3px solid ${color}40`,
+                  display: "flex", alignItems: "flex-start", gap: 14,
+                }}
+              >
+                <div style={{ width: 10, height: 10, borderRadius: "50%", background: color, flexShrink: 0, marginTop: 5 }} />
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{w.action_name}</span>
+                    <Badge color="blue">{(w.steps || []).length} steps</Badge>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    {(w.steps || []).slice(0, 4).map((s: any, j: number) => (
+                      <div key={j} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                        <ChevronRight size={10} color="rgba(255,255,255,.2)" />
+                        <span style={{ fontSize: 11, fontFamily: "var(--mono)", color: "rgba(255,255,255,.4)" }}>
+                          {typeof s === "string" ? s : s.path || s.target || JSON.stringify(s)}
+                        </span>
+                      </div>
+                    ))}
+                    {(w.steps || []).length > 4 && (
+                      <span style={{ fontSize: 10, color: "rgba(255,255,255,.2)", paddingLeft: 17 }}>
+                        +{w.steps.length - 4} more steps
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <Btn
+                  variant="secondary"
+                  small
+                  icon={isRunning ? undefined : Zap}
+                  disabled={isRunning || !!running}
+                  onClick={() => runWorkflow(w.action_name)}
+                >
+                  {isRunning ? "Running…" : "Run"}
+                </Btn>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -893,36 +1342,12 @@ function SettingsView() {
   );
 }
 
-// Missing icon polyfills
-const Save = ({ size }: { size:number }) => <HardDrive size={size} />;
-const Building = ({ size }: { size:number }) => <Server size={size} />;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SHARED: PageHeader, Toast
-// ─────────────────────────────────────────────────────────────────────────────
-const PageHeader = ({ title, sub }: { title:string; sub:string }) => (
-  <div style={{ marginBottom:22 }}>
-    <div style={{ fontSize:20, fontWeight:700, color:"var(--text)", letterSpacing:"-0.02em", marginBottom:4 }}>{title}</div>
-    <div style={{ fontSize:13, color:"rgba(255,255,255,.3)" }}>{sub}</div>
-  </div>
-);
-
-const Toast = ({ msg }: { msg:string }) => (
-  <div style={{
-    position:"fixed", top:18, right:18, zIndex:9999,
-    background: msg.startsWith("Error") ? "#dc2626" : "#16a34a",
-    color:"#fff", padding:"10px 16px", borderRadius:8,
-    fontSize:13, fontWeight:500, boxShadow:"0 4px 20px rgba(0,0,0,.5)",
-    animation:"fadeUp .2s ease",
-  }}>{msg}</div>
-);
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ROOT PAGE
 // ─────────────────────────────────────────────────────────────────────────────
 export default function AdminPage() {
   const router   = useRouter();
-  const [view,   setView]   = useState<View>("overview");
+  const [view,    setView]   = useState<View>("overview");
   const [admin,  setAdmin]  = useState({ name:"Administrator", email:"" });
   const [college,setCollege]= useState("College System");
   const [ready,  setReady]  = useState(false);
@@ -1069,18 +1494,20 @@ export default function AdminPage() {
         <div style={{ flex:1, overflowY:"auto", padding:"26px 24px", background:"var(--bg)" }} key={view}>
           <div className="view-fade">
             {view === "overview"     && <OverviewView />}
-            {view === "users" && <UserRegistryView />}
+            {view === "users"        && <UsersView />}
+            {view === "enrollments"  && <EnrollmentsView />}
             {view === "documents"    && <DocumentsView adminId={adminId} />}
             {view === "attendance"   && <AttendanceView />}
             {view === "workflows"    && <WorkflowsView />}
             {view === "integrations" && <IntegrationsView />}
             {view === "settings"     && <SettingsView />}
             {view === "subjects" && (
-  <div>
-    <PageHeader title="Subject Management" sub="Create subjects, assign faculty, enroll students" />
-    <SubjectManagementView />
-  </div>
-)}            {view === "lab" && (
+              <div>
+                <PageHeader title="Subject Management" sub="Create subjects, assign faculty, enroll students" />
+                <SubjectManagementView />
+              </div>
+            )}            
+            {view === "lab" && (
               <div>
                 <PageHeader title="Lab Requests (Global)" sub="All requests across the college — admin override enabled" />
                 <div style={{ padding:"40px", textAlign:"center", background:"var(--bg1)", border:"1px solid var(--border)", borderRadius:10, color:"rgba(255,255,255,.25)" }}>

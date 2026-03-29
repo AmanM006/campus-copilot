@@ -221,6 +221,8 @@ function OnboardingMain({ step, setStep }: { step: WizardStep; setStep: (s: Wiza
   const [collegeName,  setCollegeName]  = useState("");
   const [portalUrl,    setPortalUrl]    = useState("");
   const [apiConnected, setApiConnected] = useState(false);
+  const [localLogs, setLocalLogs] = useState<{id: number, type: string, msg: string, ts: number}[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
   const [verifiedEps,  setVerifiedEps]  = useState<Record<string, boolean>>({});
   const [selectedAct,  setSelectedAct]  = useState("attendance");
   const [teachLabel,   setTeachLabel]   = useState("");
@@ -235,7 +237,7 @@ function OnboardingMain({ step, setStep }: { step: WizardStep; setStep: (s: Wiza
     logs, busy, error, mode, setMode,
     apiCfg, setApiCfg, testApiConnection, verifyEndpoint, updateEndpoint,
     session, dom, startSession, recordStep, deleteStep, clearWorkflow, closeSession,
-    clearLogs,
+    clearLogs, launchOmniRecorder, // 👈 GRAB IT HERE
   } = useIntegration();
 
   const urlValid   = /^https?:\/\/.+/.test(portalUrl.trim());
@@ -447,112 +449,94 @@ function OnboardingMain({ step, setStep }: { step: WizardStep; setStep: (s: Wiza
   );
 
   // ══════════════════════════════════════════════════════════════════════════
-  // STEP: Agent — Teach navigation
+  // STEP: Agent — Omni-Recorder (Live Streaming Microservice UI)
   // ══════════════════════════════════════════════════════════════════════════
-  if (step === "agent_teach") return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }} className="fade-up">
-      <StatusBanner mode={mode} loggedIn={!!session?.loggedIn} apiConnected={false} />
-      <div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", marginBottom: 5 }}>Teach the AI your portal</div>
-        <p style={{ fontSize: 13, color: "rgba(226,232,240,0.4)" }}>
-          Type a menu label exactly as it appears in your portal, then press Enter. The AI will search every button, link, and menu on the page.
-        </p>
-      </div>
+  if (step === "agent_teach") {
+    // Local state to stream the Python logs instantly
 
-      {/* Action selector — which workflow are we recording */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
-        {ACTIONS.map(a => {
-          const Icon = a.icon;
-          const sel  = selectedAct === a.id;
-          const hasSteps = session?.steps?.some((s: any) => s.label?.toLowerCase().includes(a.id)) ?? false;
-          return (
-            <button key={a.id} onClick={() => setSelectedAct(a.id)} style={{
-              display: "flex", alignItems: "center", gap: 7, padding: "8px 10px",
-              background: sel ? `${a.color}12` : "rgba(255,255,255,0.02)",
-              border: `1px solid ${sel ? `${a.color}25` : "rgba(255,255,255,0.07)"}`,
-              borderRadius: 8, cursor: "pointer", fontFamily: F, fontSize: 12,
-              color: sel ? "#e2e8f0" : "rgba(226,232,240,0.45)", fontWeight: sel ? 600 : 400,
-            }}>
-              <Icon size={12} color={sel ? a.color : "rgba(255,255,255,0.25)"} />
-              {a.label}
-              {hasSteps && <Check size={9} color="#10b981" style={{ marginLeft: "auto" }} />}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Browser frame — shows CURRENT portal URL (updates after each step) */}
-      <BrowserFrame
-        url={session?.currentUrl || portalUrl}
-        loading={teachBusy || busy}
-      />
-
-      {/* Manual text input — NO whitelist, types whatever user enters */}
-      <div style={{ display: "flex", gap: 7 }}>
-        <input
-          ref={teachInputRef}
-          value={teachLabel}
-          onChange={e => { setTeachLabel(e.target.value); setStepError(null); }}
-          placeholder='Type menu label (e.g. "Academics", "Attendance") — exact text from portal'
-          onKeyDown={e => { if (e.key === "Enter" && teachLabel.trim()) handleRecord(teachLabel); }}
-          style={{ flex: 1, background: "rgba(255,255,255,0.03)", border: `1px solid ${stepError ? "rgba(239,68,68,0.4)" : "rgba(255,255,255,0.08)"}`, borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", fontSize: 13, fontFamily: F, outline: "none" }}
-        />
-        <Btn ch="Record" variant="purple" loading={teachBusy} disabled={!teachLabel.trim() || teachBusy || busy}
-          onClick={() => handleRecord(teachLabel)} />
-      </div>
-
-      {/* Step error (element not found) */}
-      {stepError && (
-        <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.18)", borderRadius: 9, fontSize: 12, color: "#fca5a5", display: "flex", gap: 8, alignItems: "flex-start" }}>
-          <AlertTriangle size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: 2 }}>{stepError}</div>
-            <div style={{ opacity: 0.7 }}>Check the exact visible text in your portal — it's case-insensitive but must match the label.</div>
-          </div>
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }} className="fade-up">
+        <StatusBanner mode={mode} loggedIn={true} apiConnected={false} />
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: "#e2e8f0", marginBottom: 5 }}>AI Omni-Recorder</div>
+          <p style={{ fontSize: 13, color: "rgba(226,232,240,0.4)" }}>
+            Click the button below to launch the recorder. Log in, and click through every tab you want to automate. 
+            When you close the browser, our AI will sort your clicks and save them to the database.
+          </p>
         </div>
-      )}
 
-      {/* Recorded steps list with delete buttons */}
-      {session?.steps && session.steps.length > 0 && (
-        <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 10, overflow: "hidden" }}>
-          <div style={{ padding: "9px 13px", borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0" }}>Recorded steps ({session.steps.length})</span>
-            {/* Delete all / start over */}
-            <button onClick={async () => { if (confirm("Clear all steps and start over?")) await clearWorkflow(); }}
-              style={{ display: "flex", alignItems: "center", gap: 5, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6, padding: "3px 9px", fontSize: 11, color: "#f87171", cursor: "pointer", fontFamily: F }}>
-              <RefreshCw size={10} /> Start over
-            </button>
-          </div>
-          {session.steps.map((s: any, i: number) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 13px", borderBottom: i < session.steps.length - 1 ? "1px solid rgba(255,255,255,0.03)" : "none" }}>
-              <div style={{ width: 16, height: 16, borderRadius: "50%", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 700, color: "#4ade80", flexShrink: 0 }}>{s.index}</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0" }}>{s.label}</div>
-                <div style={{ fontSize: 10, color: "rgba(226,232,240,0.3)", fontFamily: M }}>{s.urlAfter?.slice(0, 55)}</div>
-              </div>
-              <div style={{ fontSize: 9, color: "rgba(226,232,240,0.22)", fontFamily: M, marginRight: 6 }}>{s.strategy}</div>
-              {/* Delete individual step */}
-              <button onClick={() => deleteStep(i)}
-                style={{ background: "transparent", border: "none", color: "rgba(239,68,68,0.4)", cursor: "pointer", padding: 3, borderRadius: 4, display: "flex" }}
-                onMouseOver={e => (e.currentTarget.style.color = "#ef4444")}
-                onMouseOut={e => (e.currentTarget.style.color = "rgba(239,68,68,0.4)")}
-                title="Remove this step">
-                <X size={12} />
-              </button>
-            </div>
-          ))}
+        {/* The Black Terminal Box for Live Logs */}
+        <LogTerminal logs={localLogs} />
+
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <Btn ch="← Back" variant="secondary" onClick={() => setStep("agent_open")} disabled={isRecording} />
+          
+          <Btn ch="Launch Omni-Recorder 🚀" variant="purple" loading={isRecording} 
+            onClick={async () => {
+              setIsRecording(true);
+              setStepError(null);
+              setLocalLogs([{ id: Date.now(), type: "info", msg: "Connecting to Python Microservice on Port 8001...", ts: Date.now() }]);
+              
+              try {
+                // 👇 HERE IS THE FETCH TO THE MICROSERVICE! 👇
+                const res = await fetch("http://127.0.0.1:8001/api/record-omni-workflow", { method: "POST" });
+                
+                if (!res.ok) throw new Error("Server not responding. Is recorder_server.py running on port 8001?");
+                
+                const reader = res.body?.getReader();
+                const decoder = new TextDecoder();
+                
+                if (reader) {
+                  while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split("\n");
+                    
+                    for (const line of lines) {
+                      if (line.startsWith("data: ")) {
+                        try {
+                          const data = JSON.parse(line.substring(6));
+                          
+                          if (data.type && data.msg) {
+                            setLocalLogs(prev => [...prev, { 
+                              id: Date.now() + Math.random(), 
+                              type: data.type, 
+                              msg: data.msg, 
+                              ts: Date.now() 
+                            }]);
+                          }
+                          
+                          if (data.success) {
+                             setIsRecording(false);
+                          }
+                        } catch (e) { /* Ignore partial JSON chunks */ }
+                      }
+                    }
+                  }
+                }
+              } catch (err: any) {
+                setLocalLogs(prev => [...prev, { id: Date.now(), type: "error", msg: err.message, ts: Date.now() }]);
+                setStepError("Failed to connect to Python server. Make sure recorder_server.py is running on port 8001.");
+              }
+              setIsRecording(false);
+            }} 
+          />
+          
+          <Btn ch="Continue to Account →" icon={ChevronRight} disabled={isRecording || localLogs.length < 2} 
+            onClick={() => setStep("account")} 
+          />
         </div>
-      )}
 
-      <LogTerminal logs={logs} />
-
-      <div style={{ display: "flex", gap: 8 }}>
-        <Btn ch="← Back" variant="secondary" onClick={() => setStep("agent_open")} />
-        <Btn ch="Save & Create Account →" icon={Save} disabled={!session?.steps?.length}
-          onClick={() => setStep("account")} />
+        {stepError && (
+          <div style={{ padding: "10px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, fontSize: 12, color: "#fca5a5" }}>
+            {stepError}
+          </div>
+        )}
       </div>
-    </div>
-  );
+    );
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // STEP: Account

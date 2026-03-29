@@ -1,81 +1,95 @@
-// hooks/useMarks.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Hooks for the marks table. Used by:
-//   - Student chat/dashboard: useStudentMarks(studentId)
-//   - Teacher analytics:      useSubjectMarks(subjectId)
-
-import { useState, useEffect, useRef, useCallback } from "react";
+"use client";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 
-// ── useStudentMarks ───────────────────────────────────────────────────────────
-// Returns all marks for a student across all subjects.
-// Shape: [{ subject: {name,code}, exam_type, score, max_score, grade, entered_at }]
-export function useStudentMarks(studentId: string) {
-  const [data,    setData]    = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+// Grade point map for CGPA estimation
+const GRADE_POINTS: Record<string, number> = {
+  "O": 10, "A+": 9, "A": 8, "B+": 7,
+  "B": 6,  "C": 5,  "P": 4, "F": 0,
+};
 
-  const load = useCallback(async () => {
-    if (!studentId) { setLoading(false); return; }
-    setLoading(true);
-    const { data: rows, error } = await supabase
-      .from("marks")
-      .select("*, subject:subjects(name, code, color)")
-      .eq("student_id", studentId)
-      .order("entered_at", { ascending: false });
-    if (!error) setData(rows || []);
-    setLoading(false);
-  }, [studentId]);
+// Sort semesters so "Semester IV" > "Semester III" etc.
+const ROMAN: Record<string, number> = {
+  I: 1, II: 2, III: 3, IV: 4, V: 5,
+  VI: 6, VII: 7, VIII: 8,
+};
 
-  useEffect(() => {
-    load();
-    // Realtime: teacher adds marks → student sees immediately
-    const channel = supabase
-      .channel(`marks-student-${studentId}`)
-      .on("postgres_changes", {
-        event:  "INSERT",
-        schema: "public",
-        table:  "marks",
-        filter: `student_id=eq.${studentId}`,
-      }, (payload) => {
-        // Fetch the full row with subject join
-        supabase.from("marks")
-          .select("*, subject:subjects(name,code,color)")
-          .eq("id", payload.new.id)
-          .single()
-          .then(({ data: row }) => {
-            if (row) setData(prev => [row, ...prev.filter(r => r.id !== row.id)]);
-          });
-      })
-      .on("postgres_changes", {
-        event:  "UPDATE",
-        schema: "public",
-        table:  "marks",
-        filter: `student_id=eq.${studentId}`,
-      }, () => load())
-      .subscribe();
-
-    return () => { channel.unsubscribe(); };
-  }, [studentId, load]);
-
-  // Compute derived stats
-  const bySubject = data.reduce((acc: any, m: any) => {
-    const code = m.subject?.code || m.subject_id;
-    if (!acc[code]) acc[code] = { subject: m.subject, exams: [] };
-    acc[code].exams.push(m);
-    return acc;
-  }, {});
-
-  const cgpaEstimate = data.length > 0
-    ? Math.round(
-        data.reduce((s: number, m: any) => s + ((m.score / (m.max_score || 100)) * 10), 0) / data.length * 100
-      ) / 100
-    : null;
-
-  return { data, loading, bySubject, cgpaEstimate, refresh: load };
+function semesterRank(sem: string): number {
+  const match = sem.match(/([IVXLC]+)$/i);
+  if (!match) return 0;
+  return ROMAN[match[1].toUpperCase()] ?? 0;
 }
 
-// ── useSubjectMarks ───────────────────────────────────────────────────────────
-// All students' marks for one subject. Used by teacher analytics.
+export function useStudentMarks(email: string) {
+  const [data,    setData]    = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [cgpaEstimate, setCgpa] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!email) { setLoading(false); return; }
+    setLoading(true);
+
+    const { data: rows, error } = await supabase
+      .from("marks")
+      .select("*")
+      .eq("student_email", email)
+      .order("updated_at", { ascending: false });
+
+    if (!error && rows && rows.length > 0) {
+      const normalized = rows.map((r: any) => ({
+        ...r,
+        subject: {
+          name:  r.subject_name || r.subject_code || "Unknown",
+          code:  r.subject_code || "",
+          color: "#7c3aed",
+        },
+        // Score is valid only if > 0 or ca/mta exist
+        score:     r.score     ?? 0,
+        max_score: r.max_score ?? (r.exam_type === "internal" ? 50 : 100),
+      }));
+      setData(normalized);
+
+      // CGPA: prefer grade column, fallback to score %
+      const graded = rows.filter((r: any) => r.grade && r.grade.trim() !== "");
+      if (graded.length > 0) {
+        const pts = graded.map((r: any) => GRADE_POINTS[r.grade?.trim()] ?? 0);
+        const avg = pts.reduce((a: number, b: number) => a + b, 0) / pts.length;
+        setCgpa(avg.toFixed(2));
+      } else {
+        const validScores = rows.filter((r: any) => r.score > 0);
+        if (validScores.length > 0) {
+          const pcts = validScores.map((r: any) =>
+            (r.score / (r.max_score || 50)) * 10
+          );
+          const avg = pcts.reduce((a: number, b: number) => a + b, 0) / pcts.length;
+          setCgpa(avg.toFixed(2));
+        }
+      }
+    }
+    setLoading(false);
+  }, [email]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Group by semester → subject code → exams
+  const bySemester: Record<string, Record<string, { subject: any; exams: any[] }>> = {};
+
+  data.forEach((m: any) => {
+    const sem  = m.semester || "Unknown";
+    const code = m.subject_code || m.subject?.code || "?";
+    if (!bySemester[sem]) bySemester[sem] = {};
+    if (!bySemester[sem][code]) bySemester[sem][code] = { subject: m.subject, exams: [] };
+    bySemester[sem][code].exams.push(m);
+  });
+
+  // Sorted semester list, latest first
+  const semesters = Object.keys(bySemester).sort(
+    (a, b) => semesterRank(b) - semesterRank(a)
+  );
+
+  return { data, loading, bySemester, semesters, cgpaEstimate, refresh: load };
+}
+
 export function useSubjectMarks(subjectId: string | null) {
   const [data,    setData]    = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -92,20 +106,11 @@ export function useSubjectMarks(subjectId: string | null) {
     setLoading(false);
   }, [subjectId]);
 
-  useEffect(() => {
-    load();
-    if (!subjectId) return;
-    const ch = supabase
-      .channel(`marks-subject-${subjectId}`)
-      .on("postgres_changes", { event:"*", schema:"public", table:"marks", filter:`subject_id=eq.${subjectId}` }, load)
-      .subscribe();
-    return () => { ch.unsubscribe(); };
-  }, [subjectId, load]);
+  useEffect(() => { load(); }, [load]);
 
   const avg = data.length
-    ? Math.round(data.reduce((s: number, m: any) => s + ((m.score / (m.max_score || 100)) * 100), 0) / data.length)
+    ? Math.round(data.reduce((s, m) => s + ((m.score / (m.max_score || 100)) * 100), 0) / data.length)
     : 0;
-
   const below50 = data.filter((m: any) => (m.score / (m.max_score || 100)) * 100 < 50);
 
   return { data, loading, avg, below50, refresh: load };

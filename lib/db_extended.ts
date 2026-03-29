@@ -5,6 +5,17 @@
 
 import { supabase } from "./supabase";
 
+function _normalizeSubjectCode(value?: string) {
+  return (value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function _inferSubjectCodeFromName(name?: string) {
+  const raw = (name || "").toUpperCase();
+  const match = raw.match(/([A-Z]{2,5})[\s\-_]?(\d{3,4})/);
+  if (!match) return "";
+  return `${match[1]}${match[2]}`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SUBJECT MANAGEMENT (Admin)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -212,10 +223,65 @@ export async function getSubjectAttendanceWithRisk(subjectId: string) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function uploadStudentDocument(
-  studentId: string, subjectId: string, file: File
+  studentId: string, subjectId: string, file: File, subjectCode?: string, subjectName?: string
 ) {
+  let resolvedSubjectId = subjectId;
+
+  const { data: byId } = await supabase
+    .from("subjects")
+    .select("id")
+    .eq("id", subjectId)
+    .maybeSingle();
+
+  if (!byId?.id) {
+    const candidates = [subjectCode, subjectId]
+      .filter(Boolean)
+      .map((value) => String(value).trim())
+      .filter((value) => value.length > 0);
+
+    let found: string | null = null;
+    for (const code of candidates) {
+      const { data: byCode } = await supabase
+        .from("subjects")
+        .select("id")
+        .ilike("code", code)
+        .maybeSingle();
+      if (byCode?.id) {
+        found = byCode.id;
+        break;
+      }
+    }
+
+    if (!found) {
+      const codeForInsert = (subjectCode || subjectId || "").trim();
+      const nameForInsert = (subjectName || codeForInsert || "Subject").trim();
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from("subjects")
+        .insert({
+          name: nameForInsert,
+          code: codeForInsert || `SUBJ-${Date.now()}`,
+          semester: 0,
+          color: "#7c3aed",
+          student_id: studentId,
+        })
+        .select("id")
+        .single();
+
+      if (insertErr || !inserted?.id) {
+        throw new Error(
+          "Subject mapping not found in database for this card. Please sync subjects or ask admin to assign this subject before uploading."
+        );
+      }
+
+      found = inserted.id;
+    }
+
+    resolvedSubjectId = found as string;
+    }
+
   const ext  = file.name.split(".").pop() || "pdf";
-  const path = `${studentId}/${subjectId}/${Date.now()}_${file.name}`;
+  const path = `${studentId}/${resolvedSubjectId}/${Date.now()}_${file.name}`;
 
   const { error: storageErr } = await supabase.storage
     .from("student-uploads")
@@ -231,7 +297,7 @@ export async function uploadStudentDocument(
     .from("student_documents")
     .insert({
       student_id: studentId,
-      subject_id: subjectId,
+      subject_id: resolvedSubjectId,
       name:       file.name,
       file_url:   urlData.publicUrl,
       file_path:  path,
@@ -257,19 +323,71 @@ export async function getStudentDocumentsBySubject(subjectId: string, studentId:
 }
 
 /** All docs for a subject: teacher docs + student doc (for one student) */
-export async function getAllDocsForSubject(subjectId: string, studentId?: string) {
-  const [teacherDocs, studentDocs] = await Promise.all([
-    supabase.from("documents").select("*, uploader:users(name)").eq("subject_id", subjectId).order("created_at", { ascending: false }),
+export async function getAllDocsForSubject(subjectId: string, studentId?: string, subjectCode?: string) {
+  let resolvedSubjectId = subjectId;
+
+  const { data: byId } = await supabase
+    .from("subjects")
+    .select("id")
+    .eq("id", subjectId)
+    .maybeSingle();
+
+  if (!byId?.id) {
+    const candidates = [subjectCode, subjectId]
+      .filter(Boolean)
+      .map((value) => String(value).trim())
+      .filter((value) => value.length > 0);
+
+    for (const code of candidates) {
+      const { data: byCode } = await supabase
+        .from("subjects")
+        .select("id")
+        .ilike("code", code)
+        .maybeSingle();
+      if (byCode?.id) {
+        resolvedSubjectId = byCode.id;
+        break;
+      }
+    }
+  }
+
+  const [teacherDocsById, teacherDocsByCodeLoose, studentDocs] = await Promise.all([
+    supabase.from("documents").select("*, uploader:users(name)").eq("subject_id", resolvedSubjectId).order("created_at", { ascending: false }),
+    subjectCode
+      ? supabase
+          .from("documents")
+          .select("*, uploader:users(name)")
+          .or(`name.ilike.%${subjectCode.replace(/\s+/g, "-")}%,name.ilike.%${subjectCode.replace(/\s+/g, "")}%`)
+          .order("created_at", { ascending: false })
+      : { data: [] },
     studentId
-      ? supabase.from("student_documents").select("*").eq("subject_id", subjectId).eq("student_id", studentId).order("created_at", { ascending: false })
+      ? supabase.from("student_documents").select("*").eq("subject_id", resolvedSubjectId).eq("student_id", studentId).order("created_at", { ascending: false })
       : { data: [] },
   ]);
 
+  const subjectNorm = _normalizeSubjectCode(subjectCode);
+  const teacherPool = [
+    ...(teacherDocsById.data || []),
+    ...(teacherDocsByCodeLoose.data || []),
+  ];
+
+  const dedupedTeacher = teacherPool.filter((doc: any, index: number, arr: any[]) =>
+    index === arr.findIndex((other: any) => other.id === doc.id)
+  );
+
+  const teacherDocs = !subjectNorm
+    ? dedupedTeacher
+    : dedupedTeacher.filter((doc: any) => {
+        const inferred = _inferSubjectCodeFromName(doc?.name);
+        if (inferred) return inferred === subjectNorm;
+        return doc?.subject_id === resolvedSubjectId;
+      });
+
   return {
-    teacherDocs: (teacherDocs.data || []).map((d: any) => ({ ...d, _source: "teacher" as const })),
+    teacherDocs: (teacherDocs || []).map((d: any) => ({ ...d, _source: "teacher" as const })),
     studentDocs: (studentDocs.data || []).map((d: any) => ({ ...d, _source: "student" as const })),
     all: [
-      ...(teacherDocs.data || []).map((d: any) => ({ ...d, _source: "teacher" as const })),
+      ...(teacherDocs || []).map((d: any) => ({ ...d, _source: "teacher" as const })),
       ...(studentDocs.data || []).map((d: any) => ({ ...d, _source: "student" as const })),
     ],
   };

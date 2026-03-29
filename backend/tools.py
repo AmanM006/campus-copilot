@@ -129,20 +129,20 @@ def get_lab_tools():
             "type": "function",
             "function": {
                 "name": "get_grades",
-                "description": "Fetches the student's grades, GPA, or CGPA. Use when asked about marks, grades, results, or academic performance.",
+                "description": "Fetches the student's grades, GPA, or CGPA. YOU MUST ASK THE USER WHICH SEMESTER they want to check before calling this (e.g. 1, 2, 3, 4, or all).",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "semester": {
                             "type": "string",
-                            "description": "Semester number (e.g., '4') or 'all' for complete academic record. Defaults to latest."
+                            "description": "Semester number (e.g., '1', '2', '3', '4', 'all')."
                         },
                         "subject_code": {
                             "type": "string",
                             "description": "Specific subject code to get grades for. Optional."
                         }
                     },
-                    "required": []
+                    "required": ["semester"] # <-- THIS FORCES THE AI TO ASK YOU!
                 }
             }
         },

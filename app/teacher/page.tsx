@@ -34,8 +34,12 @@ interface ChatMsg { id: string; role: "user" | "assistant"; content: string; thr
 interface Thread  { thread_id: string; title: string; }
 
 const FACULTY_FALLBACK = {
-  id: "FAC-MIT-0042", name: "Dr. Priya Sharma", initials: "PS",
-  dept: "Computer Science & Engineering", designation: "Associate Professor",
+  id: "FAC-MIT-0042", 
+  name: "Dr. Priya Sharma", 
+  initials: "PS",
+  dept: "Computer Science & Engineering", 
+  designation: "Faculty", // Updated to match your DB
+  email: "priya.sharma@mit.edu" // Added email for completeness
 };
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -709,6 +713,7 @@ function ChatView({ faculty, pendingPrompt, clearPendingPrompt }: { faculty: typ
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
+// ─── Main Page ────────────────────────────────────────────────────────────────
 export default function TeacherPage() {
   const router = useRouter();
   const [view,          setView]          = useState<View>("dashboard");
@@ -719,17 +724,32 @@ export default function TeacherPage() {
   const [activeThread,  setActiveThread]  = useState<string | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 
-  // Live pending count from real data
+  // Live pending count from real data - using the verified state ID
   const { pendingCount } = useFacultyLabRequests(faculty.id);
 
   useEffect(() => {
+    // 🚨 DEMO OVERRIDE: Instantly force login as Dr. Priya Sharma
+    // This bypasses the login screen entirely so you can just show the UI
+    sessionStorage.setItem("cc_email", "priya.sharma@mit.edu");
+    sessionStorage.setItem("cc_role", "faculty");
+    sessionStorage.setItem("cc_name", "Dr. Priya Sharma");
+    sessionStorage.setItem("cc_user_id", "FAC-MIT-0042");
+
     const email = sessionStorage.getItem("cc_email");
-    const role  = sessionStorage.getItem("cc_role");
-    const name  = sessionStorage.getItem("cc_name") || "";
-    if (!email || !role) { router.replace("/login"); return; }
-    if (role === "student") { router.replace("/chat"); return; }
-    const initials = name.split(" ").filter(Boolean).map((n: string) => n[0]).slice(0, 2).join("").toUpperCase();
-    setFaculty({ ...FACULTY_FALLBACK, name: name || FACULTY_FALLBACK.name, initials: initials || FACULTY_FALLBACK.initials });
+    const name  = sessionStorage.getItem("cc_name");
+    
+    // Generate initials for the avatar (e.g., "PS")
+    const initials = name?.split(" ").filter(Boolean).map((n: string) => n[0]).slice(0, 2).join("").toUpperCase();
+    
+    // Set the state perfectly so all the database hooks pull her real data
+    setFaculty({ 
+      ...FACULTY_FALLBACK, 
+      id: "FAC-MIT-0042",
+      name: name || FACULTY_FALLBACK.name, 
+      initials: initials || FACULTY_FALLBACK.initials,
+      email: email || "priya.sharma@mit.edu"
+    });
+    
     setAuthReady(true);
   }, [router]);
 

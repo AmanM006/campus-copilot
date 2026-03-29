@@ -54,7 +54,7 @@ async function fetchFromCache(email: string, action: string) {
     .from("cached_data")
     .select("data, updated_at")
     .eq("user_email", email)
-    .eq("data_type",  action)
+    .eq("type", action)
     .maybeSingle();
 
   if (!data?.data) return null;

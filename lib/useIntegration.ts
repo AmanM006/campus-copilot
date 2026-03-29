@@ -366,8 +366,46 @@ export function useIntegration() {
     const res = await callJSON("get-dom", { sessionId: session.sessionId });
     if (res?.success) setDom(res);
   }, [session]);
+  const launchOmniRecorder = useCallback(async () => {
+    clearLogs();
+    setBusy(true);
+    pushLog("info", "Connecting to Python Omni-Recorder…", "system");
 
-  return {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/agent/record-omni-workflow", { method: "POST" });
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (reader) {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split("\n");
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.substring(6));
+                if (data.type && data.msg) {
+                  // Push the Python log directly into your React state!
+                  pushLog(data.type as LogType, data.msg, "agent");
+                }
+              } catch (e) { /* skip malformed JSON */ }
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      pushLog("error", `Failed to connect to Python server: ${err.message}`, "system");
+      setError("Python server unreachable.");
+    } finally {
+      setBusy(false);
+    }
+  }, [clearLogs, pushLog]);
+
+return {
     // shared
     logs, busy, error, mode, setMode, clearLogs,
     // api
@@ -375,5 +413,6 @@ export function useIntegration() {
     // agent
     session, dom,
     startSession, recordStep, deleteStep, clearWorkflow, closeSession, refreshDom,
+    launchOmniRecorder, // 👈 ADD THIS HERE
   };
 }

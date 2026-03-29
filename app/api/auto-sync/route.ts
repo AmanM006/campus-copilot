@@ -1,7 +1,4 @@
 // app/api/auto-sync/route.ts
-// ─── Auto-sync endpoint: called on login to ensure session + data exist ────────
-// Flow: check session → create if missing → fetch data → store in DB
-
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
@@ -10,29 +7,43 @@ export async function POST(req: NextRequest) {
     const { email } = await req.json();
     if (!email) return NextResponse.json({ error: "email required" }, { status: 400 });
 
-    // ── 1. Check if portal session already exists ──────────────────────────
+    // ── 1. Check existing session ──────────────────────────────────────────
     const { data: session } = await supabase
       .from("portal_sessions")
       .select("*")
       .eq("user_email", email)
-      .single();
+      .maybeSingle();
 
-    if (session && session.status === "active") {
-      // Session exists — just trigger a data refresh in background
-      triggerBackgroundSync(email).catch(console.error);
-      return NextResponse.json({ status: "syncing", message: "Session active, refreshing data" });
+    // ── 2. If it's already working, ignore the refresh! ────────────────────
+    if (session && session.status === "pending") {
+      return NextResponse.json({ status: "pending", message: "Sync already in progress. Ignoring." });
     }
 
-    // ── 2. No session → initiate Playwright login flow ────────────────────
-    // Insert a pending session record so the frontend knows what's happening
+    // ── 3. If active, respect the Background Worker's job ──────────────────
+    if (session && session.status === "active") {
+      const lastSynced = session.last_synced ? new Date(session.last_synced).getTime() : 0;
+      const ageHours = (Date.now() - lastSynced) / (1000 * 60 * 60);
+
+      // If data is less than 5 hours old, DO NOTHING.
+      if (ageHours < 5) {
+        return NextResponse.json({ 
+          status: "active", 
+          message: "Data is fresh. Background worker will handle future syncs." 
+        });
+      }
+
+      // Only if it's super stale, trigger a background refresh
+      triggerBackgroundSync(email).catch(console.error);
+      return NextResponse.json({ status: "syncing", message: "Session active, refreshing stale data" });
+    }
+
+    // ── 4. No session or expired → initiate login flow ────────────────────
     await supabase.from("portal_sessions").upsert({
       user_email:     email,
       status:         "pending",
       storage_path:   `sessions/${email.replace("@", "_").replace(".", "_")}.json`,
-      last_validated: new Date().toISOString(),
     }, { onConflict: "user_email" });
 
-    // Trigger headless browser (non-blocking)
     initiatePlaywrightSession(email).catch(console.error);
 
     return NextResponse.json({
@@ -55,8 +66,6 @@ async function initiatePlaywrightSession(email: string) {
       body:    JSON.stringify({ email }),
     });
     if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    console.log("[auto-sync] session init response:", data);
   } catch (err) {
     console.error("[auto-sync] initiatePlaywrightSession failed:", err);
   }
@@ -71,7 +80,6 @@ async function triggerBackgroundSync(email: string) {
       body:    JSON.stringify({ email }),
     });
     if (!res.ok) throw new Error(await res.text());
-    console.log("[auto-sync] background sync triggered for", email);
   } catch (err) {
     console.error("[auto-sync] triggerBackgroundSync failed:", err);
   }

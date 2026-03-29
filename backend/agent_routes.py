@@ -1,9 +1,4 @@
 # agent_routes.py
-# ─── Playwright session management + full scraping pipeline ───────────────────
-# Mount in main.py:
-#   from agent_routes import agent_router
-#   app.include_router(agent_router)
-
 import os, json, asyncio, logging, re, time
 from pathlib import Path
 from fastapi import APIRouter
@@ -21,97 +16,101 @@ _supabase = create_client(
     os.getenv("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_ANON_KEY", "")),
 )
 
-# ─── Pydantic models ──────────────────────────────────────────────────────────
-class SessionRequest(BaseModel):
-    email: str
+_active_syncs = set()
 
+class SessionRequest(BaseModel): email: str
 class SyncRequest(BaseModel):
     email: str
+    semester: str = None
 
-# ─── Session path ─────────────────────────────────────────────────────────────
 def session_path(email: str) -> Path:
-    safe = email.replace("@", "_").replace(".", "_")
-    return SESSIONS_DIR / f"{safe}.json"
+    return SESSIONS_DIR / f"{email.replace('@', '_').replace('.', '_')}.json"
 
 def _now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
 
+def _safe_int(s) -> int:
+    try:
+        return int(float(str(s).strip().split("/")[0]))
+    except:
+        return 0
+
+def _safe_float(s) -> float:
+    try:
+        return float(str(s).strip().replace("%", "").replace(",", ""))
+    except:
+        return 0.0
+
 def set_session_status(email: str, status: str, last_synced: str = None):
-    """
-    Only writes columns that exist: user_email, status, storage_path, last_synced.
-    No last_validated or updated_at — those don't exist and cause PGRST/42703.
-    """
-    payload = {
-        "user_email":   email,
-        "status":       status,
-        "storage_path": str(session_path(email)),
-    }
+    payload = {"user_email": email, "status": status, "storage_path": str(session_path(email))}
     if last_synced:
         payload["last_synced"] = last_synced
-    _supabase.table("portal_sessions") \
-        .upsert(payload, on_conflict="user_email") \
-        .execute()
+    try:
+        _supabase.table("portal_sessions").upsert(payload, on_conflict="user_email").execute()
+    except Exception as e:
+        logger.error(f"[sync] DB Update Failed: {e}")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ROUTES
-# ─────────────────────────────────────────────────────────────────────────────
 @agent_router.post("/init-session")
 async def init_session(req: SessionRequest):
-    asyncio.create_task(_sync_user_data(req.email))
+    asyncio.create_task(_trigger_sync_safely(req.email))
     return {"status": "started", "message": "Browser opening for first-time login"}
 
 @agent_router.post("/sync-user")
 async def sync_user(req: SyncRequest):
-    asyncio.create_task(_sync_user_data(req.email))
+    asyncio.create_task(_trigger_sync_safely(req.email, req.semester))
     return {"status": "syncing", "message": f"Background sync started for {req.email}"}
 
+async def _trigger_sync_safely(email: str, semester: str = None):
+    if email in _active_syncs:
+        logger.info(f"[sync] Sync already running for {email}. Ignoring.")
+        return
+    _active_syncs.add(email)
+    try:
+        await _sync_user_data(email, semester)
+    finally:
+        _active_syncs.discard(email)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MASTER PIPELINE  ─  flat, no recursion
-# ─────────────────────────────────────────────────────────────────────────────
-async def _sync_user_data(email: str):
+# =============================================================================
+# MASTER PIPELINE
+# =============================================================================
+async def _sync_user_data(email: str, target_semester: str = None):
     from playwright.async_api import async_playwright
-
     portal_url = os.getenv("PORTAL_URL", "https://maheslcmtech.manipal.edu")
-    spath      = session_path(email)
-
+    spath = session_path(email)
     logger.info(f"[sync] ── Starting sync for {email} ──")
     set_session_status(email, "pending")
 
     async with async_playwright() as pw:
-
-        # ── No session file → headed login ────────────────────────────────────
-        if not spath.exists():
-            logger.info(f"[sync] No session — opening headed browser for {email}")
-            ok = await _do_headed_login(pw, portal_url, spath, email)
-            if not ok:
-                set_session_status(email, "needs_reauth")
-                return
-
-        # ── Session file exists → validate headless ───────────────────────────
-        else:
-            browser = await pw.chromium.launch(headless=True)
-            ctx     = await browser.new_context(storage_state=str(spath))
-            page    = await ctx.new_page()
-            await page.goto(portal_url, wait_until="domcontentloaded", timeout=45_000)
-            logged_in = await _check_logged_in(page)
-            await browser.close()
-
-            if not logged_in:
-                logger.warning(f"[sync] Session expired — re-login for {email}")
-                set_session_status(email, "expired")
+        browser = None
+        try:
+            if not spath.exists():
                 ok = await _do_headed_login(pw, portal_url, spath, email)
                 if not ok:
                     set_session_status(email, "needs_reauth")
                     return
+            else:
+                browser = await pw.chromium.launch(headless=True)
+                ctx = await browser.new_context(storage_state=str(spath))
+                page = await ctx.new_page()
+                await page.goto(portal_url, wait_until="domcontentloaded", timeout=45_000)
+                await asyncio.sleep(4)
 
-        # ── Scrape all data with a fresh headless session ─────────────────────
-        browser = await pw.chromium.launch(headless=True)
-        ctx     = await browser.new_context(storage_state=str(spath))
-        page    = await ctx.new_page()
+                if not await _check_logged_in(page):
+                    logger.warning(f"[sync] Session expired for {email}")
+                    set_session_status(email, "expired")
+                    await browser.close()
+                    browser = None
+                    ok = await _do_headed_login(pw, portal_url, spath, email)
+                    if not ok:
+                        set_session_status(email, "needs_reauth")
+                        return
 
-        try:
+            if not browser:
+                browser = await pw.chromium.launch(headless=True)
+                ctx = await browser.new_context(storage_state=str(spath))
+                page = await ctx.new_page()
+
             attendance = await _scrape_attendance(page, portal_url)
             if attendance:
                 _cache_data(email, "attendance", attendance)
@@ -128,113 +127,81 @@ async def _sync_user_data(email: str):
                 _cache_data(email, "schedule", schedule)
                 logger.info(f"[sync] Schedule: {len(schedule)} slots")
 
-            academics = await _scrape_academics(page, portal_url)
+            academics = await _scrape_academics(page, portal_url, target_semester)
             if academics:
                 _cache_data(email, "academics", academics)
-                logger.info(f"[sync] Academics: cgpa={academics.get('cgpa')}, "
-                            f"internal={len(academics.get('internal_results', []))}")
+                _write_marks_table(email, academics)
+                logger.info(f"[sync] Academics mapped successfully.")
 
-            # Refresh cookies
             await ctx.storage_state(path=str(spath))
 
+        except Exception as e:
+            logger.error(f"[sync] Critical failure for {email}: {e}", exc_info=True)
         finally:
-            await browser.close()
+            if browser:
+                await browser.close()
+            synced_at = _now()
+            set_session_status(email, "active", last_synced=synced_at)
+            logger.info(f"[sync] ── Sync complete for {email} ──")
+            try:
+                _supabase.table("sync_events").insert({
+                    "user_email": email, "event": "sync_complete", "created_at": synced_at
+                }).execute()
+            except Exception:
+                pass
 
-    synced_at = _now()
-    set_session_status(email, "active", last_synced=synced_at)
-    logger.info(f"[sync] ── Sync complete for {email} ──")
-
-    try:
-        _supabase.table("sync_events").insert({
-            "user_email": email,
-            "event":      "sync_complete",
-            "created_at": synced_at,
-        }).execute()
-    except Exception as e:
-        logger.warning(f"[sync] sync_events insert failed (non-fatal): {e}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HEADED LOGIN  (opens browser, waits for user, saves cookies)
-# ─────────────────────────────────────────────────────────────────────────────
 async def _do_headed_login(pw, portal_url: str, spath: Path, email: str) -> bool:
+    logger.info(f"\n{'='*60}\n🚨 PORTAL LOGIN REQUIRED FOR: {email}\n{'='*60}\n")
     browser = await pw.chromium.launch(headless=False, slow_mo=80)
-    ctx     = await browser.new_context()
-    page    = await ctx.new_page()
-    await page.goto(portal_url, wait_until="domcontentloaded", timeout=45_000)
-    logger.info(f"[login] Waiting for manual login (5 min) for {email}…")
+    ctx = await browser.new_context()
+    page = await ctx.new_page()
+    try:
+        await page.goto(portal_url, wait_until="domcontentloaded", timeout=45_000)
+        deadline = time.time() + 300
+        logged_in = False
+        while time.time() < deadline:
+            await asyncio.sleep(2)
+            try:
+                if await _check_logged_in(page):
+                    logged_in = True
+                    break
+            except Exception:
+                pass
+        if logged_in:
+            await asyncio.sleep(3)
+            await ctx.storage_state(path=str(spath))
+            logger.info(f"[login] ✅ Session saved for {email}")
+        return logged_in
+    except Exception as e:
+        logger.error(f"[login] Failed: {e}")
+        return False
+    finally:
+        await browser.close()
 
-    deadline  = time.time() + 300
-    logged_in = False
-    while time.time() < deadline:
-        await asyncio.sleep(2)
-        try:
-            if await _check_logged_in(page):
-                logged_in = True
-                break
-        except Exception:
-            pass
-
-    if logged_in:
-        await ctx.storage_state(path=str(spath))
-        logger.info(f"[login] Session saved for {email}")
-    else:
-        logger.warning(f"[login] Timed out for {email}")
-
-    await browser.close()
-    return logged_in
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SESSION CHECK
-# ─────────────────────────────────────────────────────────────────────────────
 async def _check_logged_in(page) -> bool:
     try:
         if "/s/" in page.url.lower():
             return True
-        el = await page.query_selector(
-            "lightning-icon, a:has-text('Log Out'), .slds-global-header"
-        )
+        el = await page.query_selector("lightning-icon, a:has-text('Log Out'), .slds-global-header")
         return el is not None
     except Exception:
         return False
 
-
-# ═════════════════════════════════════════════════════════════════════════════
-# DYNAMIC WORKFLOW ENGINE
-# Loads steps from Supabase agent_workflows table and executes them.
-# Falls back to hardcoded navigation if no workflow found.
-# ═════════════════════════════════════════════════════════════════════════════
-
+# =============================================================================
+# WORKFLOW ENGINE
+# =============================================================================
 async def get_workflow(action_name: str) -> dict | None:
-    """Fetch workflow JSON from Supabase. Returns None if not found."""
     try:
-        # Removed maybe_single() to prevent NoneType crashes
-        result = _supabase.table("agent_workflows") \
-            .select("*") \
+        result = _supabase.table("agent_workflows").select("*") \
             .eq("action_name", action_name) \
             .order("created_at", desc=True) \
-            .limit(1) \
-            .execute()
-        
+            .limit(1).execute()
         return result.data[0] if result.data else None
-    except Exception as e:
-        logger.warning(f"[workflow] get_workflow({action_name}) failed: {e}")
+    except Exception:
         return None
 
-
 async def run_workflow(page, steps: list, max_retries: int = 3) -> bool:
-    """
-    Execute a list of workflow step dicts.
-    Step schema matches the JS navigationAgent:
-      { type: "click",    labels: [...] }
-      { type: "wait",     text: "..." }
-      { type: "type",     labels: [...], value: "..." }
-      { type: "navigate", url: "..." }
-      { type: "wait_nav", timeout: 5000 }
-    Returns True if all steps succeeded, False otherwise.
-    """
-    for i, step in enumerate(steps):
+    for step in steps:
         success = False
         for attempt in range(1, max_retries + 1):
             try:
@@ -242,516 +209,400 @@ async def run_workflow(page, steps: list, max_retries: int = 3) -> bool:
                 if t == "click":
                     success = await _safe_click(page, step.get("labels", []))
                 elif t == "wait":
-                    success = await _safe_wait(page, step.get("text", ""),
-                                               timeout=step.get("timeout", 10_000))
-                elif t == "type":
-                    success = await _safe_type(page, step.get("labels", []),
-                                               step.get("value", ""))
+                    success = await _safe_wait(page, step.get("text", ""), timeout=step.get("timeout", 10_000))
                 elif t == "navigate":
                     await page.goto(step["url"], wait_until="domcontentloaded", timeout=15_000)
                     success = True
-                elif t == "wait_nav":
-                    try:
-                        await page.wait_for_load_state(
-                            "networkidle", timeout=step.get("timeout", 8_000)
-                        )
-                    except Exception:
-                        await page.wait_for_timeout(step.get("timeout", 1_000))
-                    success = True
-
                 if success:
                     break
-
-            except Exception as err:
+            except Exception:
                 if attempt < max_retries:
-                    logger.warning(
-                        f"[workflow] Step {i+1} attempt {attempt} failed: {err} — retrying"
-                    )
                     await asyncio.sleep(attempt)
                 else:
-                    logger.error(f"[workflow] Step {i+1} failed after {max_retries} attempts")
                     return False
-
-        await asyncio.sleep(0.4)   # brief pause between steps
-
+        await asyncio.sleep(0.4)
     return True
-
 
 async def _safe_click(page, labels: list, timeout: int = 6_000) -> bool:
     for label in labels:
-        strategies = [
+        for fn in [
             lambda l=label: page.get_by_role("button", name=re.compile(l, re.I)).first.click(timeout=timeout),
             lambda l=label: page.get_by_role("link",   name=re.compile(l, re.I)).first.click(timeout=timeout),
             lambda l=label: page.get_by_role("tab",    name=re.compile(l, re.I)).first.click(timeout=timeout),
             lambda l=label: page.get_by_text(re.compile(l, re.I)).first.click(timeout=timeout),
-            lambda l=label: page.locator(f"a:has-text('{l}')").first.click(timeout=3_000),
-            lambda l=label: page.locator(f"button:has-text('{l}')").first.click(timeout=3_000),
-            lambda l=label: page.locator(f"[title*='{l}' i]").first.click(timeout=3_000),
-        ]
-        for fn in strategies:
+        ]:
             try:
                 await fn()
                 return True
             except Exception:
                 pass
     return False
-
 
 async def _safe_wait(page, text: str, timeout: int = 10_000) -> bool:
     try:
         await page.wait_for_selector(f"text={text}", timeout=timeout)
         return True
     except Exception:
+        return False
+
+# =============================================================================
+# TAB HELPERS
+# =============================================================================
+
+async def _click_tab(page, tab_name: str) -> bool:
+    strategies = [
+        lambda n=tab_name: page.locator(f"span[title='{n}']").first.click(timeout=3_000),
+        lambda n=tab_name: page.locator(f"a:has(span[title='{n}'])").first.click(timeout=3_000),
+        lambda n=tab_name: page.locator(f"li:has(span[title='{n}'])").first.click(timeout=3_000),
+        lambda n=tab_name: page.locator(f"[title='{n}']").first.click(timeout=3_000),
+        lambda n=tab_name: page.get_by_text(n, exact=True).first.click(timeout=3_000),
+    ]
+    for i, strategy in enumerate(strategies):
         try:
-            await page.wait_for_load_state("networkidle", timeout=5_000)
+            await strategy()
+            logger.info(f"[tab] ✅ Clicked '{tab_name}' via strategy {i + 1}")
             return True
         except Exception:
-            return False
-
-
-async def _safe_type(page, labels: list, value: str, timeout: int = 4_000) -> bool:
-    for label in labels:
-        strategies = [
-            lambda l=label: page.get_by_label(re.compile(l, re.I)).first.fill(value, timeout=timeout),
-            lambda l=label: page.get_by_placeholder(re.compile(l, re.I)).first.fill(value, timeout=timeout),
-            lambda l=label: page.locator(f"[name='{l}']").first.fill(value, timeout=timeout),
-            lambda l=label: page.locator(f"input[type='{l}']").first.fill(value, timeout=timeout),
-        ]
-        for fn in strategies:
-            try:
-                await fn()
-                return True
-            except Exception:
-                pass
+            continue
+    logger.warning(f"[tab] ❌ Could not click '{tab_name}'")
     return False
 
+async def _wait_for_table_render(page, timeout: int = 8_000) -> None:
+    try:
+        await page.wait_for_selector("[data-label]", state="visible", timeout=timeout)
+        await asyncio.sleep(2)
+    except Exception:
+        logger.warning("[tab] wait_for_selector timed out — using sleep fallback")
+        await asyncio.sleep(5)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SCRAPERS  (dynamic-first, hardcoded fallback)
-# ═════════════════════════════════════════════════════════════════════════════
+async def _get_visible_tab_titles(page) -> list:
+    titles = []
+    try:
+        spans = await page.locator("span[title]").all()
+        for sp in spans:
+            try:
+                if await sp.is_visible():
+                    t = (await sp.get_attribute("title") or "").strip()
+                    if t: titles.append(t)
+            except Exception: pass
+    except Exception: pass
+    return titles
+
+# =============================================================================
+# SCRAPERS
+# =============================================================================
 
 async def _scrape_attendance(page, base_url: str) -> list:
-    """
-    Dynamic: tries agent_workflows table first.
-    Fallback: navigates directly to /attendance.
-    Extracts data via Salesforce data-cell-value backdoor.
-    """
     try:
-        workflow = await get_workflow("attendance")
-        if workflow and workflow.get("steps"):
-            logger.info("[scrape_att] Running dynamic workflow")
-            ok = await run_workflow(page, workflow["steps"])
-            if not ok:
-                logger.warning("[scrape_att] Workflow failed — using fallback navigation")
-                await page.goto(f"{base_url}/attendance",
-                                wait_until="domcontentloaded", timeout=45_000)
-        else:
-            logger.info("[scrape_att] No workflow — direct navigation")
-            await page.goto(f"{base_url}/s/attendance",
-                            wait_until="domcontentloaded", timeout=45_000)
+        clean_base = base_url.rstrip('/')
+        if clean_base.endswith('/s'):
+            clean_base = clean_base[:-2]
 
-        await page.wait_for_selector("table.slds-table tbody tr", timeout=30_000)
-        return await _extract_slds_table(page, {
-            "th[data-label='Course Name']":          "subject_raw",
-            "td[data-label='Total Classes']":        "total",
-            "td[data-label='Present']":              "attended",
-            "td[data-label='Attendance Percentage']": "percent",
-        }, _parse_attendance_row)
+        target_url = f"{clean_base}/s/attendance"
+        logger.info(f"[scrape_att] 🌐 Navigating to: {target_url}")
+
+        await page.goto(target_url)
+        await page.reload()
+
+        logger.info("[scrape_att] ⏳ Waiting 10s for Salesforce DOM...")
+        await asyncio.sleep(10)
+
+        empty_loc = page.get_by_text("No data found", exact=False).first
+        if await empty_loc.is_visible():
+            logger.info("[scrape_att] ⚠️ No data found.")
+            return []
+
+        cells = await page.locator("[data-label]").all()
+        logger.info(f"[scrape_att] Found {len(cells)} cells.")
+
+        results = {}
+        current_subject = None
+
+        for cell in cells:
+            label = (await cell.get_attribute("data-label") or "").strip().lower()
+            text  = (await cell.inner_text() or "").strip()
+            if not label or not text:
+                continue
+
+            if "course" in label or "subject" in label:
+                current_subject = text
+                if current_subject not in results:
+                    if " : " in text:
+                        parts = text.split(" : ", 1)
+                        code = parts[0].strip()
+                        raw_name = parts[1].strip()
+                        clean_name = re.sub(r'\s*' + re.escape(code) + r'\s*$', '', raw_name).strip()
+                        results[current_subject] = {"code": code, "name": clean_name.title()}
+                    else:
+                        results[current_subject] = {"code": text.strip(), "name": text.strip().title()}
+
+            elif current_subject:
+                if "total" in label:
+                    results[current_subject]["total"] = _safe_int(text)
+                elif "present" in label or "attended" in label:
+                    results[current_subject]["attended"] = _safe_int(text)
+                elif "percentage" in label or "%" in label:
+                    val = _safe_float(text)
+                    results[current_subject]["percent"] = val
+                    results[current_subject]["safe"]    = val >= 75.0
+
+        final_data = [r for r in results.values() if "total" in r and "attended" in r]
+        logger.info(f"[scrape_att] ✅ Extracted {len(final_data)} subjects!")
+        return final_data
 
     except Exception as e:
-        logger.warning(f"[scrape_att] Failed: {e}")
+        logger.error(f"[scrape_att] ❌ Failed: {e}")
         return []
 
+async def _scrape_academics(page, base_url: str, target_semester: str = None) -> dict:
+    result = {
+        "cgpa": None, "gpa": None,
+        "credits_earned": None, "total_credits": None,
+        "enrolled": [], "internal_results": [], "final_results": [],
+    }
+    master_results = {}  # Store everything here by course_code
 
-async def _scrape_profile(page, base_url: str) -> dict:
-    """Navigate to profile page and extract key fields using flexible locators."""
+    def _clean_label(raw: str) -> str:
+        c = re.sub(r'[\u200b\u200c\u200d\ufeff\xa0\t]', ' ', raw)
+        return re.sub(r'\s+', ' ', c).strip().lower()
+
+    def _clean_text(raw: str) -> str:
+        c = re.sub(r'[\u200b\u200c\u200d\ufeff\xa0\t]', ' ', raw)
+        return re.sub(r'\s+', ' ', c).strip()
+
+    def _parse_name(txt: str, code: str) -> str:
+        name_part = txt
+        if " : " in txt: name_part = txt.split(" : ", 1)[-1]
+        elif ":" in txt: name_part = txt.split(":", 1)[-1]
+        elif " - " in txt: name_part = txt.split(" - ", 1)[-1]
+        
+        name_part = re.sub(r'\s*' + re.escape(code) + r'\s*$', '', name_part).strip()
+        name_part = re.sub(r'\s+[A-Z]{2,5}\s*\d{4}\s*$', '', name_part).strip()
+        return name_part.title() if name_part else code
+
+    async def _scrape_grid(sem: str, tab_name: str):
+        """Scrapes whatever grid is currently visible and merges into master_results"""
+        cells = await page.locator("[data-label]").all()
+        current_code = None
+
+        for cell in cells:
+            try:
+                if not await cell.is_visible():
+                    bbox = await cell.bounding_box()
+                    if not (bbox and bbox["width"] > 0): continue
+                raw_lbl = await cell.get_attribute("data-label") or ""
+                raw_txt = await cell.inner_text() or ""
+            except Exception:
+                continue
+
+            lbl = _clean_label(raw_lbl)
+            txt = _clean_text(raw_txt)
+            if not lbl or not txt: continue
+
+            # Anchor on Course Code
+            if "code" in lbl and ("course" in lbl or "subject" in lbl) or lbl == "code":
+                current_code = txt.strip()
+                if current_code not in master_results:
+                    master_results[current_code] = {"code": current_code, "name": current_code, "semester": sem}
+                continue
+
+            if not current_code: continue
+            r = master_results[current_code]
+
+            # Merge Data
+            if "name" in lbl and ("course" in lbl or "subject" in lbl):
+                r["name"] = _parse_name(txt, current_code)
+            elif re.search(r'\bca\b', lbl) and "marks" in lbl: r["ca_marks"] = _safe_float(txt)
+            elif re.search(r'\bmta\b', lbl): r["mta_marks"] = _safe_float(txt)
+            elif "attendance" in lbl: r["attendance_pct"] = _safe_float(txt)
+            elif "credit" in lbl: r["credits"] = _safe_float(txt)
+            elif "internal" in lbl and "marks" in lbl: r["internal_marks"] = _safe_float(txt)
+            elif "grade" in lbl: r["grade"] = txt
+
     try:
-        workflow = await get_workflow("profile")
-        if workflow and workflow.get("steps"):
-            await run_workflow(page, workflow["steps"])
-        else:
-            await page.goto(f"{base_url}/profile",
-                            wait_until="domcontentloaded", timeout=30_000)
+        clean_base = base_url.rstrip('/')
+        if clean_base.endswith('/s'): clean_base = clean_base[:-2]
+        target_url = f"{clean_base}/s/academics"
+        
+        logger.info(f"[scrape_acad] 🌐 Navigating to: {target_url}")
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=45_000)
+        await page.reload()
+        logger.info("[scrape_acad] ⏳ Waiting 6s for page to settle...")
+        await asyncio.sleep(6)
 
-        profile = {}
+        # =====================================================================
+        # FLOW PART 1: INTERNAL RESULT TAB (CA/MTA Marks)
+        # =====================================================================
+        try:
+            logger.info("[scrape_acad] 🟡 Clicking 'Internal Result' Tab...")
+            await page.get_by_text("Internal Result", exact=True).first.click(timeout=5000)
+            await asyncio.sleep(4)
 
-        # Each field: try data-label span/div, then regex on full text
-        field_map = {
-            "name":          ["Name", "Student Name", "Full Name"],
-            "enrollment_id": ["Enrollment ID", "Enrollment No", "Enrolment ID"],
-            "roll_number":   ["Roll Number", "Roll No", "Roll"],
-            "semester":      ["Current Semester", "Semester", "Sem"],
-            "phone":         ["Phone", "Mobile", "Contact"],
-            "cgpa":          ["CGPA", "Cumulative GPA"],
-            "program":       ["Program", "Programme", "Course", "Degree"],
-            "branch":        ["Branch", "Department", "Specialization"],
-        }
+            # 🚨 FIX: Explicitly target the VISIBLE button
+            btn = page.locator("lightning-combobox button:visible").first
+            await btn.click()
+            await asyncio.sleep(1)
+            
+            opts = await page.locator("lightning-base-combobox-item:visible").all_inner_texts() 
+            sems = [o.strip() for o in opts if o.strip() and o.strip() != "All"]
+            sems = list(dict.fromkeys(sems)) # This instantly deletes all duplicates!
+            await btn.click() 
+            
+            logger.info(f"[scrape_acad] Internal Result Semesters: {sems}")
 
-        for key, labels in field_map.items():
-            for label in labels:
-                try:
-                    # Salesforce: value is often in an adjacent sibling or
-                    # a div/span with data-output-element-id containing the label text
-                    val = await page.evaluate(f"""
-                        () => {{
-                            // Strategy 1: lightning-output-field next to label
-                            const labels = document.querySelectorAll(
-                                'span.slds-form-element__label, label, dt, th'
-                            );
-                            for (const lbl of labels) {{
-                                if (lbl.innerText.toLowerCase().includes('{label.lower()}')) {{
-                                    const parent = lbl.closest('.slds-form-element, tr, li, div');
-                                    if (parent) {{
-                                        const val = parent.querySelector(
-                                            '.slds-form-element__static, dd, td, ' +
-                                            'lightning-formatted-text, span:not(.slds-form-element__label)'
-                                        );
-                                        if (val) return val.innerText.trim();
-                                    }}
-                                    const next = lbl.nextElementSibling;
-                                    if (next) return next.innerText.trim();
-                                }}
-                            }}
-                            return null;
-                        }}
-                    """)
-                    if val:
-                        profile[key] = val
-                        break
-                except Exception:
-                    pass
+            for sem in sems:
+                if target_semester and target_semester.lower() not in sem.lower(): continue
+                logger.info(f"[scrape_acad] 🟡 Internal Result -> Extracting: {sem}")
+                
+                await btn.click()
+                await asyncio.sleep(1)
+                await page.locator("lightning-base-combobox-item").filter(has_text=re.compile(f"^{re.escape(sem)}$", re.I)).first.click()
+                await asyncio.sleep(4) 
+                
+                await _scrape_grid(sem, "Internal Result")
 
-        # Fallback: regex on full page text
-        page_text = await page.evaluate("() => document.body.innerText")
-        if not profile.get("cgpa"):
-            m = re.search(r"CGPA\s*[:\-]?\s*([\d.]+)", page_text, re.I)
-            if m: profile["cgpa"] = m.group(1)
-        if not profile.get("semester"):
-            m = re.search(r"(?:Semester|Sem)\s*[:\-]?\s*([IVX\d]+)", page_text, re.I)
-            if m: profile["semester"] = m.group(1)
-        if not profile.get("name"):
-            m = re.search(r"(?:Name)\s*[:\-]?\s*([A-Z][a-zA-Z\s]{2,40})", page_text)
-            if m: profile["name"] = m.group(1).strip()
+        except Exception as e:
+            logger.warning(f"[scrape_acad] Failed on Internal Result flow: {e}")
 
-        return profile
+        # =====================================================================
+        # FLOW PART 2: RESULT TAB (Endsem Marks / Grades / CGPA)
+        # =====================================================================
+        try:
+            logger.info("[scrape_acad] 🟢 Clicking 'Result' Tab...")
+            await page.get_by_text("Result", exact=True).first.click(timeout=5000)
+            await asyncio.sleep(4)
+
+            # 🚨 FIX: Explicitly target the VISIBLE button
+            btn = page.locator("lightning-combobox button:visible").first
+            await btn.click()
+            await asyncio.sleep(1)
+            
+            opts = await page.locator("lightning-base-combobox-item").all_inner_texts()
+            sems = list(dict.fromkeys(sems)) # This instantly deletes all duplicates!
+            sems = [o.strip() for o in opts if o.strip() and o.strip() != "All"]
+            await btn.click() 
+            
+            logger.info(f"[scrape_acad] Result Semesters: {sems}")
+
+            for sem in sems:
+                if target_semester and target_semester.lower() not in sem.lower(): continue
+                logger.info(f"[scrape_acad] 🟢 Result -> Extracting: {sem}")
+                
+                await btn.click()
+                await asyncio.sleep(1)
+                await page.locator("lightning-base-combobox-item:visible").filter(has_text=re.compile(f"^{re.escape(sem)}$", re.I)).first.click() 
+                await asyncio.sleep(4)
+                
+                await _scrape_grid(sem, "Result")
+
+                # CGPA Extraction
+                if result["cgpa"] is None:
+                    try:
+                        b_tags = await page.locator("b").all()
+                        for b in b_tags:
+                            if not await b.is_visible(): continue
+                            bt = _clean_text(await b.inner_text() or "")
+                            if "CGPA" in bt:
+                                p = page.locator("p").filter(has=b)
+                                if await p.count() > 0:
+                                    m = re.search(r"CGPA\s*[:\-]?\s*([\d.]+)", " ".join((await p.first.inner_text() or "").split()), re.I)
+                                    if m: 
+                                        result["cgpa"] = float(m.group(1))
+                                        logger.info(f"[scrape_acad] 🎯 CGPA found: {result['cgpa']}")
+                    except Exception: pass
+
+        except Exception as e:
+            logger.warning(f"[scrape_acad] Failed on Result flow: {e}")
+
+        for row in master_results.values():
+            result["final_results"].append(row)
 
     except Exception as e:
-        logger.warning(f"[scrape_profile] Failed: {e}")
-        return {}
+        logger.error(f"[scrape_acad] ❌ Critical failure: {e}", exc_info=True)
+
+    logger.info(f"[scrape_acad] 🏁 Complete — {len(result['final_results'])} rows extracted.")
+    return result
 
 
 async def _scrape_schedule(page, base_url: str) -> list:
-    """
-    Extract weekly timetable from the SLCM calendar/schedule page.
-    Salesforce calendar events typically render as clickable tiles.
-    """
+    events_data = []
     try:
         workflow = await get_workflow("schedule")
         if workflow and workflow.get("steps"):
-            await run_workflow(page, workflow["steps"])
-        else:
-            await page.goto(f"{base_url}/schedule",
-                            wait_until="domcontentloaded", timeout=30_000)
-
-        # Wait for calendar or table
-        try:
-            await page.wait_for_selector(
-                ".fc-event, .slds-table, table.slds-table, [class*='calendar']",
-                timeout=15_000
-            )
-        except Exception:
-            pass
-
-        slots = await page.evaluate("""
-        () => {
-            const results = [];
-
-            // ── FullCalendar events (fc-event) ─────────────────────────────
-            document.querySelectorAll('.fc-event, .fc-time-grid-event').forEach(el => {
-                const title = el.querySelector('.fc-title, .fc-content')?.innerText?.trim() || el.innerText.trim();
-                const time  = el.querySelector('.fc-time')?.getAttribute('data-start') ||
-                              el.querySelector('.fc-time')?.innerText?.trim() || '';
-                const date  = el.closest('[data-date]')?.getAttribute('data-date') || '';
-                if (title) results.push({ title, time, date, source: 'calendar' });
-            });
-
-            // ── slds-table rows ────────────────────────────────────────────
-            if (results.length === 0) {
-                document.querySelectorAll('table.slds-table tbody tr').forEach(row => {
-                    const get = label => {
-                        const el = row.querySelector(`td[data-label="${label}"], th[data-label="${label}"]`);
-                        return el ? (el.getAttribute('data-cell-value') || el.innerText.trim()) : '';
-                    };
-                    const subject    = get('Subject')    || get('Course')     || get('Course Name') || '';
-                    const classroom  = get('Classroom')  || get('Room')       || get('Venue')       || '';
-                    const start_time = get('Start Time') || get('Start')      || '';
-                    const end_time   = get('End Time')   || get('End')        || '';
-                    const day        = get('Day')        || get('Date')       || '';
-                    if (subject) results.push({ subject, classroom, start_time, end_time, day });
-                });
-            }
-
-            // ── Text-block parsing for SLCM calendar-list layout ──────────
-            if (results.length === 0) {
-                const blocks = document.querySelectorAll(
-                    '[class*="event"], [class*="slot"], [class*="session"], .slds-card'
-                );
-                blocks.forEach(el => {
-                    const text = el.innerText.trim();
-                    if (text.length > 5) results.push({ raw: text });
-                });
-            }
-
-            return results;
-        }
-        """)
-
-        # Parse raw blocks if structured extraction failed
-        parsed = []
-        for s in slots:
-            if "raw" in s:
-                parsed.append(_parse_raw_schedule_block(s["raw"]))
-            elif s.get("title") or s.get("subject"):
-                parsed.append(s)
-
-        logger.info(f"[scrape_schedule] {len(parsed)} slots")
-        return [p for p in parsed if p]
-
-    except Exception as e:
-        logger.warning(f"[scrape_schedule] Failed: {e}")
-        return []
-
-
-def _parse_raw_schedule_block(text: str) -> dict:
-    """Parse a free-text schedule block like SLCM produces."""
-    result = {}
-    # Subject code pattern: "CSS 2201 : DATABASE SYSTEMS"
-    m = re.search(r"([A-Z]{2,4}\s*\d{3,4})\s*[-:]\s*([^\n]+)", text)
-    if m:
-        result["code"]    = m.group(1).strip()
-        result["subject"] = m.group(2).strip().title()
-    # Classroom
-    m = re.search(r"(?:Classroom|Room|Venue)\s*[:\-]?\s*([^\n]+)", text, re.I)
-    if m: result["classroom"] = m.group(1).strip()
-    # Times
-    m = re.search(r"(\d{1,2}:\d{2}\s*[ap]m)\s*[-–]\s*(\d{1,2}:\d{2}\s*[ap]m)", text, re.I)
-    if m:
-        result["start_time"] = m.group(1).strip()
-        result["end_time"]   = m.group(2).strip()
-    m = re.search(r"(?:Start Time|Start)\s*[:\-]?\s*(\d{1,2}:\d{2}\s*[ap]m)", text, re.I)
-    if m: result["start_time"] = m.group(1).strip()
-    m = re.search(r"(?:End Time|End)\s*[:\-]?\s*(\d{1,2}:\d{2}\s*[ap]m)", text, re.I)
-    if m: result["end_time"] = m.group(1).strip()
-    return result if result else {}
-
-
-async def _scrape_academics(page, base_url: str) -> dict:
-    try:
-        workflow = await get_workflow("academics")
-        if workflow and workflow.get("steps"):
             ok = await run_workflow(page, workflow["steps"])
-            if not ok:
-                # Removed /s/
-                await page.goto(f"{base_url}/academics", wait_until="domcontentloaded", timeout=45_000)
-        else:
-            # Removed /s/
-            await page.goto(f"{base_url}/academics", wait_until="domcontentloaded", timeout=45_000)
+            if not ok: await page.goto(f"{base_url}/s/schedule", wait_until="domcontentloaded", timeout=45_000)
+        else: await page.goto(f"{base_url}/s/schedule", wait_until="domcontentloaded", timeout=45_000)
 
-        result: dict = {
-            "cgpa": None, "gpa": None,
-            "internal_results": [], "final_results": [],
-            "credits_earned": None, "total_credits": None,
-        }
+        logger.info("[scrape_sched] ⏳ Waiting 10s for schedule to render...")
+        await asyncio.sleep(10)
 
-        # ── Tab 1: Internal Result ──────────────────────────────────────────
-        try:
-            await asyncio.sleep(2) # Give base page time to settle
-            await _safe_click(page, ["Internal Result", "Internal"])
-            await asyncio.sleep(2) # Give Salesforce time to render the new tab
-            
-            await page.wait_for_selector("table.slds-table tbody tr", timeout=15_000)
-            result["internal_results"] = await _extract_slds_table(
-                page,
-                {
-                    "td[data-label='Course Code']":     "code",
-                    "td[data-label='Course Name']":     "name",
-                    "td[data-label='Credits']":         "credits",
-                    "td[data-label='Attendance %']":    "attendance_pct",
-                    "td[data-label='CA Marks']":        "ca_marks",
-                    "td[data-label='MTA Marks']":       "mta_marks",
-                    "th[data-label='Course Code']":     "code",
-                    "th[data-label='Course Name']":     "name",
-                },
-                _parse_internal_row,
-            )
-            logger.info(f"[scrape_academics] Internal results: {len(result['internal_results'])}")
-        except Exception as e:
-            logger.warning(f"[scrape_academics] Internal Result tab failed: {e}")
+        cells = await page.locator("[data-label]").all()
+        logger.info(f"[scrape_sched] Found {len(cells)} data-label cells")
 
-        # ── Tab 2: Result (Final Grades + CGPA) ────────────────────────────
-        try:
-            await _safe_click(page, ["Result", "Results", "Final Result"])
-            await asyncio.sleep(2)   # Give Salesforce time to render the new tab
-
-            # Extract sidebar CGPA/GPA text
-            sidebar_text = await page.evaluate("""
-                () => {
-                    const sidebar = document.querySelector(
-                        '.slds-col:first-child, aside, [class*="sidebar"], ' +
-                        '[class*="summary"], .slds-form'
-                    );
-                    return sidebar ? sidebar.innerText : document.body.innerText.slice(0, 3000);
-                }
-            """)
-            cgpa_m = re.search(r"CGPA\s*[:\-]?\s*([\d.]+)", sidebar_text, re.I)
-            gpa_m  = re.search(r"\bGPA\s*[:\-]?\s*([\d.]+)", sidebar_text, re.I)
-            tc_m   = re.search(r"Total Credits.*?[:\-]?\s*(\d+)", sidebar_text, re.I)
-            ce_m   = re.search(r"Credit[s]? Earned.*?[:\-]?\s*(\d+)", sidebar_text, re.I)
-
-            if cgpa_m: result["cgpa"] = float(cgpa_m.group(1))
-            if gpa_m:  result["gpa"]  = float(gpa_m.group(1))
-            if tc_m:   result["total_credits"]  = int(tc_m.group(1))
-            if ce_m:   result["credits_earned"] = int(ce_m.group(1))
-
-            # Extract final results table
+        results = {}
+        current_key = None
+        for cell in cells:
             try:
-                await page.wait_for_selector("table.slds-table tbody tr", timeout=10_000)
-                result["final_results"] = await _extract_slds_table(
-                    page,
-                    {
-                        "td[data-label='Course Code']":    "code",
-                        "td[data-label='Course Name']":    "name",
-                        "td[data-label='Internal Marks']": "internal_marks",
-                        "td[data-label='Grade']":          "grade",
-                        "th[data-label='Course Code']":    "code",
-                        "th[data-label='Course Name']":    "name",
-                    },
-                    _parse_final_row,
-                )
-                logger.info(f"[scrape_academics] Final results: {len(result['final_results'])}")
-            except Exception as e:
-                logger.warning(f"[scrape_academics] Final results table: {e}")
+                if not await cell.is_visible(): continue
+                label = (await cell.get_attribute("data-label") or "").strip().lower()
+                text  = (await cell.inner_text() or "").strip()
+            except Exception: continue
+            if not label or not text: continue
 
-        except Exception as e:
-            logger.warning(f"[scrape_academics] Result tab failed: {e}")
+            if any(k in label for k in ["day", "subject", "course", "class"]):
+                current_key = text
+                if current_key not in results: results[current_key] = {"raw_label": text}
+            elif current_key:
+                r = results[current_key]
+                if any(k in label for k in ["start", "from", "begin", "time"]): r["start_time"] = text
+                elif any(k in label for k in ["end", "to", "till"]): r["end_time"] = text
+                elif "room" in label or "venue" in label or "hall" in label: r["room"] = text
+                elif "type" in label or "mode" in label: r["type"] = text
+                elif any(k in label for k in ["subject", "course", "name"]): r["subject_name"] = text
 
-        return result
+        if results:
+            events_data = list(results.values())
+        if not events_data:
+            rows = await page.locator("tr[role='row']").all()
+            for row in rows:
+                try:
+                    if not await row.is_visible(): continue
+                    cells_in_row = await row.locator("td").all()
+                    texts = [t for t in [(await c.inner_text() or "").strip() for c in cells_in_row] if t]
+                    if len(texts) >= 2: events_data.append({"row_cells": texts})
+                except Exception: continue
 
-    except Exception as e:
-        logger.warning(f"[scrape_academics] Top-level error: {e}")
-        return {}
+    except Exception as e: logger.error(f"[scrape_sched] Failed: {e}", exc_info=True)
+    return events_data
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SHARED TABLE EXTRACTOR (Salesforce data-cell-value backdoor)
-# ─────────────────────────────────────────────────────────────────────────────
-async def _extract_slds_table(page, selector_map: dict, row_parser) -> list:
-    """
-    selector_map: { "td[data-label='X']": "field_name", ... }
-    row_parser:   fn(raw_dict) → dict | None
-    """
-    rows = await page.query_selector_all("table.slds-table tbody tr")
-    results = []
-    for row in rows:
-        raw = {}
-        for selector, key in selector_map.items():
-            el = await row.query_selector(selector)
-            if el:
-                raw[key] = (await el.get_attribute("data-cell-value") or
-                            await el.inner_text() or "").strip()
-        parsed = row_parser(raw)
-        if parsed:
-            results.append(parsed)
-    return results
+async def _scrape_profile(page, base_url: str) -> dict:
+    return {}
 
-
-def _parse_attendance_row(raw: dict) -> dict | None:
-    sr = raw.get("subject_raw", "")
-    if not sr:
-        return None
-    code, name = ("", sr.strip().title())
-    if " : " in sr:
-        parts = sr.split(" : ", 1)
-        code  = parts[0].strip()
-        name  = parts[1].strip().title()
-    total    = _safe_int(raw.get("total", "0"))
-    attended = _safe_int(raw.get("attended", "0"))
-    pct      = _safe_float(raw.get("percent", "0"))
-    if total == 0 and attended == 0 and pct == 0:
-        return None
-    return {"code": code, "name": name,
-            "attended": attended, "total": total,
-            "percent": round(pct, 1), "safe": pct >= 75.0}
-
-
-def _parse_internal_row(raw: dict) -> dict | None:
-    code = raw.get("code", "").strip()
-    name = raw.get("name", "").strip().title()
-    if not code and not name:
-        return None
-    return {
-        "code":           code,
-        "name":           name,
-        "credits":        _safe_float(raw.get("credits", "0")),
-        "attendance_pct": _safe_float(raw.get("attendance_pct", "0")),
-        "ca_marks":       _safe_float(raw.get("ca_marks", "0")),
-        "mta_marks":      _safe_float(raw.get("mta_marks", "0")),
-    }
-
-
-def _parse_final_row(raw: dict) -> dict | None:
-    code = raw.get("code", "").strip()
-    name = raw.get("name", "").strip().title()
-    if not code and not name:
-        return None
-    return {
-        "code":           code,
-        "name":           name,
-        "internal_marks": _safe_float(raw.get("internal_marks", "0")),
-        "grade":          raw.get("grade", "").strip(),
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DB CACHE WRITERS
-# ─────────────────────────────────────────────────────────────────────────────
 def _cache_data(email: str, data_type: str, data):
-    try:
-        _supabase.table("cached_data").upsert({
-            "user_email": email,
-            "type":       data_type,
-            "data":       json.dumps(data),
-            "updated_at": _now(),
-        }, on_conflict="user_email,type").execute()
-    except Exception as e:
-        logger.error(f"[cache] cached_data write failed ({data_type}): {e}")
-
+    try: _supabase.table("cached_data").upsert({"user_email": email, "type": data_type, "data": json.dumps(data), "updated_at": _now()}, on_conflict="user_email,type").execute()
+    except Exception as e: logger.error(f"[cache] Failed: {e}")
 
 def _write_attendance_cache(email: str, records: list):
     try:
-        now  = _now()
-        rows = [{
-            "user_email":   email,
-            "subject_code": r.get("code", ""),
-            "subject_name": r.get("name", ""),
-            "attended":     int(r.get("attended", 0)),
-            "total":        int(r.get("total", 0)),
-            "percent":      float(r.get("percent", 0)),
-            "safe":         bool(r.get("safe", False)),
-            "fetched_at":   now,
-        } for r in records]
-        if rows:
-            _supabase.table("attendance_cache") \
-                .upsert(rows, on_conflict="user_email,subject_code") \
-                .execute()
-    except Exception as e:
-        logger.error(f"[cache] attendance_cache write failed: {e}")
+        rows = [{"user_email": email, "subject_code": r.get("code", ""), "subject_name": r.get("name", ""), "attended": int(r.get("attended", 0)), "total": int(r.get("total", 0)), "percent": float(r.get("percent", 0)), "safe": bool(r.get("safe", False)), "fetched_at": _now()} for r in records]
+        if rows: _supabase.table("attendance_cache").upsert(rows, on_conflict="user_email,subject_code").execute()
+    except Exception: pass
 
-
-# ─── Type coercions ───────────────────────────────────────────────────────────
-def _safe_int(s) -> int:
-    try: return int(float(str(s).strip().split("/")[0]))
-    except: return 0
-
-def _safe_float(s) -> float:
-    try: return float(str(s).strip().replace("%", "").replace(",", ""))
-    except: return 0.0
+def _write_marks_table(email: str, academics: dict):
+    rows = []
+    now = _now()
+    for r in academics.get("final_results", []):
+        code = (r.get("code") or "").strip()
+        if not code: continue
+        score = _safe_float(r.get("internal_marks") or 0)
+        ca = _safe_float(r.get("ca_marks") or 0) or None
+        mta = _safe_float(r.get("mta_marks") or 0) or None
+        rows.append({
+            "student_email": email, "subject_code": code, "subject_name": (r.get("name") or "").strip(),
+            "exam_type": "final", "semester": (r.get("semester") or "").strip(), "score": score,
+            "max_score": 100.0, "grade": (r.get("grade") or "").strip(), "credits": _safe_float(r.get("credits", 0)),
+            "ca_marks": ca, "mta_marks": mta, "attendance_pct": _safe_float(r.get("attendance_pct", 0)) or None, "updated_at": now
+        })
+    try:
+        if rows: _supabase.table("marks").upsert(rows, on_conflict="student_email,subject_code,exam_type").execute()
+    except Exception as e: logger.error(f"[cache] Failed: {e}")
