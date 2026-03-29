@@ -10,9 +10,12 @@ load_dotenv(find_dotenv())
 # Using your exact OpenAI setup from main.py
 github_token = os.getenv("GITHUB_TOKEN")
 if not github_token:
-    raise ValueError("GITHUB_TOKEN missing in .env")
-client = AsyncOpenAI(base_url="https://models.inference.ai.azure.com", api_key=github_token)
 
+    raise ValueError("GITHUB_TOKEN missing in .env")
+client = AsyncOpenAI(
+    base_url="https://models.inference.ai.azure.com",
+    api_key="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" # 🚨 Force the fresh token here!
+)
 # The master log of EVERYTHING the admin does
 raw_events = []
 

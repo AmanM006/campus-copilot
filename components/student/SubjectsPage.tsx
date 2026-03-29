@@ -495,8 +495,7 @@ export function SubjectWorkspace({
         }),
       });
       const body = await res.json();
-      const rawReply = String(body?.reply || "");
-      const parsed = extractJsonObject(rawReply);
+      const rawReply = String(body?.reply || body?.full_text || body?.response || body?.message || "");      const parsed = extractJsonObject(rawReply);
 
       // Normalise spec
       const spec: SimulationSpec = {
@@ -557,8 +556,7 @@ export function SubjectWorkspace({
         }),
       });
       const body = await res.json();
-      const rawReply = String(body?.reply || "");
-      const parsed = extractJsonObject(rawReply);
+      const rawReply = String(body?.reply || body?.full_text || body?.response || body?.message || "");      const parsed = extractJsonObject(rawReply);
 
       const spec: PhysicsSandboxSpec = {
         title:     String(parsed?.title || `Sandbox: ${prompt}`),
@@ -622,30 +620,53 @@ export function SubjectWorkspace({
         body: JSON.stringify({ message: promptMap[action], user_id: studentId, subject_context: { subject_name: subject.name, subject_code: subject.code, selected_docs: activeDocNames, exam_mode: examMode, studio_action: action } }),
       });
       const body = await res.json();
-      const rawReply = String(body?.reply || "");
+      
+      // 🚨 FIX 1: Catch ALL possible keys your Python backend might use!
+      const rawReply = String(body?.reply || body?.full_text || body?.response || body?.message || "");      console.log("Raw Backend Output:", rawReply); // This will show you what actually came back!
 
       if (action === "quiz" || action === "flashcards") {
+        let isSuccess = false;
         try {
-          const parsed = extractJsonObject(rawReply);
+          // 🚨 FIX 2: Smart JSON Extraction
+          const jsonMatch = rawReply.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+          if (!jsonMatch) throw new Error("No JSON structure found in AI reply");
+          
+          const cleanString = jsonMatch[0];
+          const parsed = JSON.parse(cleanString);
+
           if (action === "quiz") {
-            const items: QuizItem[] = (parsed?.quiz || []).filter((q: any) => q.question && q.options?.length >= 2 && q.answer);
-            if (items.length === 0) throw new Error("No valid quiz items");
+            const quizArray = Array.isArray(parsed) ? parsed : (parsed.quiz || parsed.questions || []);
+            const items: QuizItem[] = quizArray.filter((q: any) => 
+              (q.question || q.prompt) && q.options?.length >= 2 && (q.answer || q.correct)
+            );
+            if (items.length === 0) throw new Error("No valid quiz items found");
             setQuizItems(items);
           } else {
-            const cards: FlashcardItem[] = (parsed?.flashcards || []).filter((c: any) => c.question && c.answer);
-            if (cards.length === 0) throw new Error("No valid flashcards");
+            const flashArray = Array.isArray(parsed) ? parsed : (parsed.flashcards || parsed.cards || []);
+            const cards: FlashcardItem[] = flashArray.map((c: any) => ({
+              question: c.question || c.front || c.term,
+              answer: c.answer || c.back || c.definition
+            })).filter((c: FlashcardItem) => c.question && c.answer);
+
+            if (cards.length === 0) throw new Error("No valid flashcards found");
             setFlashcards(cards);
           }
-        } catch {
-          setStudioError("AI returned invalid data. Try again.");
+          isSuccess = true;
+        } catch (err) {
+          console.warn("⚠️ AI refused to output JSON. Falling back to standard chat.", rawReply);
+          setStudioError(null);
+          setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, content: rawReply || "AI returned an empty response." } : m));
+          await persistMessage("assistant", rawReply || "AI returned an empty response.");
         }
-        // FIX 3: persist JSON response
-        const assistantContent = `\`\`\`json\n${rawReply}\n\`\`\``;
-        setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, content: assistantContent } : m));
-        await persistMessage("assistant", assistantContent);
+
+        if (isSuccess) {
+          const assistantContent = `\`\`\`json\n${rawReply}\n\`\`\``;
+          setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, content: assistantContent } : m));
+          await persistMessage("assistant", assistantContent);
+        }
       } else {
-        setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, content: rawReply } : m));
-        await persistMessage("assistant", rawReply);
+        setMessages(prev => prev.map(m => m.id === aiMsgId ? { ...m, content: rawReply || "AI returned an empty response." } : m));
+        await persistMessage("assistant", rawReply || "AI returned an empty response.");
       }
       await loadThreads();
     } catch (e: any) {
