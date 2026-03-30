@@ -1,7 +1,7 @@
 # Security (DO NOT REMOVE)
 .env
 .env.local
-
+!.env.example
 # Next.js / Node
 node_modules/
 backend/sessions/
