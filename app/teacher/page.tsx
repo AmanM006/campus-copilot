@@ -651,7 +651,7 @@ function ChatView({ faculty, pendingPrompt, clearPendingPrompt }: { faculty: typ
     setMessages(p => [...p, { id: sid, role: "assistant", content: "", thread_id: threadId }]); setStreamingId(sid);
     await supabase.from("messages").insert([{ user_id: faculty.id, content, role: "user", thread_id: threadId }]);
     try {
-      const res = await fetch("http://localhost:8000/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: content, user_id: faculty.id, history: messages.slice(-6).map(m => ({ role: m.role, content: m.content })), role: "faculty" }) });
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: content, user_id: faculty.id, history: messages.slice(-6).map(m => ({ role: m.role, content: m.content })), role: "faculty" }) });
       if (!res.body) { setIsTyping(false); return; }
       const reader = res.body.getReader(); const decoder = new TextDecoder();
       let buf = ""; let full = ""; let wb = "";

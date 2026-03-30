@@ -60,8 +60,7 @@ export async function POST(req: NextRequest) {
 // ── Non-blocking: call Python agent to start Playwright session ───────────────
 async function initiatePlaywrightSession(email: string) {
   try {
-    const res = await fetch("http://localhost:8000/api/agent/init-session", {
-      method:  "POST",
+    const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/agent/init-session`, {      method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ email }),
     });
@@ -74,7 +73,7 @@ async function initiatePlaywrightSession(email: string) {
 // ── Non-blocking: refresh data for a user who already has a session ───────────
 async function triggerBackgroundSync(email: string) {
   try {
-    const res = await fetch("http://localhost:8000/api/agent/sync-user", {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/agent/sync-user`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ email }),

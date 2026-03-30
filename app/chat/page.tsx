@@ -231,7 +231,7 @@ function useStreamingChat() {
       if (force || /[\s\n]/.test(wordBuffer.slice(-1))) { onToken(wordBuffer); wordBuffer = ""; await new Promise(r => setTimeout(r, 22)); }
     };
     try {
-      const res = await fetch("http://localhost:8000/api/chat/stream", {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/chat/stream`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, user_id: userId, history, role: "student", context: contextData }),
       });

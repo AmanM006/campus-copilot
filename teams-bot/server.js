@@ -59,6 +59,6 @@ server.post("/api/messages", async (req, res) => {
 const PORT = process.env.PORT || 3978;
 server.listen(PORT, () => {
   console.log(`\n🤖 CampusCopilot Teams Bot running on http://localhost:${PORT}`);
-  console.log(`   Backend: ${process.env.BACKEND_URL || "http://localhost:8000"}`);
+  console.log(`   Backend: ${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"}`);
   console.log(`   App ID:  ${process.env.MICROSOFT_APP_ID || "(emulator mode — no App ID)"}\n`);
 });

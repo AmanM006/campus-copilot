@@ -10,7 +10,7 @@
 const { ActivityHandler, MessageFactory, CardFactory } = require("botbuilder");
 const fetch = require("node-fetch");
 
-const BACKEND = process.env.BACKEND_URL || "http://localhost:8000";
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
 // How many message pairs to keep as history per user
 const MAX_HISTORY_PAIRS = 6;
