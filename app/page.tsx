@@ -4,7 +4,7 @@ import {
   ArrowUpRight, Plus, Minus, ArrowDown, Terminal, Cloud, Layers,
   Calendar, FileText, CheckCircle2, Activity, Send, Settings, Sidebar,
   X, Bot, User, Check, Globe, Sparkles, Database, Shield, BookOpen,
-  FlaskConical, BarChart3, Zap, ChevronRight,
+  FlaskConical, BarChart3, Zap, ChevronRight,LucideIcon
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -40,8 +40,13 @@ interface OnboardingState {
   actions:     string[];
   contact?:    string;   // email for enterprise
 }
+interface ActionOption {
+  label: string;
+  value: string;
+  icon: LucideIcon; // 👈 This tells TS that the icon is a Lucide component
+}
 
-const ACTION_OPTIONS = [
+const ACTION_OPTIONS: ActionOption[] = [
   { label: "Fetch attendance",    value: "fetch_attendance",  icon: BarChart3   },
   { label: "Fetch grades & GPA",  value: "fetch_grades",      icon: BookOpen    },
   { label: "Book lab slots",      value: "book_lab",          icon: FlaskConical },
@@ -353,7 +358,7 @@ function OnboardingModal({ plan, onClose }: { plan: "starter" | "campus" | "ente
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
                 {ACTION_OPTIONS.map(opt => {
                   const sel = selected.has(opt.value);
-                  const Icon = opt.icon;
+                  const Icon = opt.icon as LucideIcon;
                   return (
                     <button key={opt.value} onClick={() => setSelected(p => { const n = new Set(p); n.has(opt.value) ? n.delete(opt.value) : n.add(opt.value); return n; })} style={{
                       display: "flex", alignItems: "center", gap: 8, padding: "10px 12px",
