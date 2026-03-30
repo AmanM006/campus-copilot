@@ -5,7 +5,7 @@
 import os, json, logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-
+backend_url = os.getenv("NEXT_PUBLIC_BACKEND_URL", "http://localhost:8000")
 logger = logging.getLogger("attendance_pipeline")
 
 CACHE_TTL_HOURS = 6  # Consider cached data fresh for 6 hours
@@ -84,7 +84,7 @@ async def _trigger_sync(email: str):
         import aiohttp
         async with aiohttp.ClientSession() as session:
             await session.post(
-                "http://localhost:8000/api/agent/sync-user",
+                f"{backend_url}/api/agent/sync-user",
                 json={"email": email},
                 timeout=aiohttp.ClientTimeout(total=5),
             )

@@ -3,7 +3,7 @@ uvicorn
 pydantic
 openai
 python-dotenv
-pinecone-client
+pinecone
 supabase
 playwright
 aiohttp
