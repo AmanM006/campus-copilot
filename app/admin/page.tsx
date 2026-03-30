@@ -74,6 +74,13 @@ const Badge = ({ color, children, style }: { color:"green"|"blue"|"amber"|"red"|
     </span>
   );
 };
+// ── Typed icon renderer ───────────────────────────────────────────────────────
+function LucideIcon({ icon: Icon, size, color, style }: { 
+  icon: React.ElementType; size: number; color?: string; style?: React.CSSProperties 
+}) {
+  const I = Icon as React.FC<{ size?: number; color?: string; style?: React.CSSProperties }>;
+  return <I size={size} color={color} style={style} />;
+}
 
 const Btn = ({ variant="primary", children, onClick, disabled, small, icon: Icon }:
   { variant?:"primary"|"secondary"|"ghost"|"danger"; children?:React.ReactNode; onClick?:()=>void; disabled?:boolean; small?:boolean; icon?:React.ElementType }) => {
@@ -96,8 +103,8 @@ const Btn = ({ variant="primary", children, onClick, disabled, small, icon: Icon
       onMouseOver={e => { if (!disabled && variant==="primary") (e.currentTarget as HTMLButtonElement).style.background="#2563eb"; }}
       onMouseOut={e  => { if (!disabled && variant==="primary") (e.currentTarget as HTMLButtonElement).style.background="#3b82f6"; }}
     >
-      {Icon && <Icon size={12} />}{children}
-    </button>
+{Icon && <LucideIcon icon={Icon} size={12} />}
+</button>
   );
 };
 
@@ -106,7 +113,7 @@ const Input = ({ label, value, onChange, placeholder, hint, mono, type="text", r
   <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
     {label && <label style={{ fontSize:11, fontWeight:600, color:"rgba(255,255,255,.35)", textTransform:"uppercase", letterSpacing:".07em" }}>{label}</label>}
     <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-      {Icon && <div style={{ position: "absolute", left: 12, color: "rgba(255,255,255,.25)", display: "flex" }}><Icon size={14} /></div>}
+      {Icon && <div style={{ position: "absolute", left: 12, color: "rgba(255,255,255,.25)", display: "flex" }}><LucideIcon icon={Icon} size={14} /></div>}
       <input type={type} value={value} onChange={e => onChange?.(e.target.value)} placeholder={placeholder}
         readOnly={readOnly}
         className="adm-field"
@@ -158,7 +165,8 @@ const TR = ({ cells, onClick }: { cells: React.ReactNode[]; onClick?:()=>void })
 const Metric = ({ label, value, sub, accent, Icon }:
   { label:string; value:React.ReactNode; sub?:string; accent?:string; Icon?:React.ElementType }) => (
   <div className="adm-card" style={{ padding:"20px 22px", position:"relative", overflow:"hidden" }}>
-    {Icon && <div style={{ position:"absolute", top:18, right:18, opacity:.08 }}><Icon size={40} color={accent||"#fff"} /></div>}
+    {Icon && <div style={{ position:"absolute", top:18, right:18, opacity:.08 }}><LucideIcon icon={Icon} size={40} color={accent||"#fff"} />
+    </div>}
     <div style={{ fontSize:11, fontWeight:600, color:"rgba(255,255,255,.3)", textTransform:"uppercase", letterSpacing:".07em", marginBottom:8 }}>{label}</div>
     <div style={{ fontSize:28, fontWeight:700, color: accent||"var(--text)", letterSpacing:"-0.03em", fontFamily:"var(--mono)", marginBottom:4 }}>{value}</div>
     {sub && <div style={{ fontSize:11, color:"rgba(255,255,255,.3)" }}>{sub}</div>}
@@ -1433,7 +1441,7 @@ export default function AdminPage() {
                   fontSize:12, fontWeight: view===item.id ? 600 : 400,
                   transition:"all .12s", marginBottom:1, textAlign:"left",
                 }}>
-                  <item.icon size={13} style={{ color: view===item.id?"#3b82f6":"rgba(255,255,255,.3)", flexShrink:0 }} />
+                  <LucideIcon icon={item.icon} size={13} style={{ color: view===item.id?"#3b82f6":"rgba(255,255,255,.3)", flexShrink:0 }} />
                   {item.label}
                 </button>
               ))}
